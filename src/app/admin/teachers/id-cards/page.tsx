@@ -4,8 +4,9 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { teacherQueries, User as TeacherUser } from '@/lib/database-queries';
+import { teacherQueries, User as TeacherUser, settingsQueries } from '@/lib/database-queries';
 import { QRUtils } from '@/lib/qr-utils';
 import {
   Home,
@@ -39,7 +40,15 @@ import {
   IdCard,
   ArrowLeft,
   Printer,
-  Filter
+  Filter,
+  Globe,
+  FileText,
+  BookOpen as BookOpenIcon,
+  Award,
+  MessageSquare,
+  Gift,
+  Sparkles,
+  Users as UsersIcon
 } from 'lucide-react';
 
 function TeacherIdCardsPage() {
@@ -53,13 +62,23 @@ function TeacherIdCardsPage() {
   const [qrCodes, setQrCodes] = useState<Map<string, string>>(new Map());
   const [loadingQRCodes, setLoadingQRCodes] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
+  const [imageError, setImageError] = useState(false);
+  const [schoolId, setSchoolId] = useState('102330');
+  const [schoolName, setSchoolName] = useState('ইকরা নূরানী একাডেমি');
   const router = useRouter();
+  const { userData } = useAuth();
+
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUser(user);
         loadTeachers();
+        loadSchoolSettings();
       } else {
         router.push('/auth/login');
       }
@@ -68,6 +87,22 @@ function TeacherIdCardsPage() {
 
     return () => unsubscribe();
   }, [router]);
+
+  const loadSchoolSettings = async () => {
+    try {
+      const settings = await settingsQueries.getSettings();
+      if (settings) {
+        if (settings.schoolCode) {
+          setSchoolId(settings.schoolCode);
+        }
+        if (settings.schoolName) {
+          setSchoolName(settings.schoolName);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading school settings:', error);
+    }
+  };
 
   useEffect(() => {
     filterTeachers();
@@ -112,9 +147,10 @@ function TeacherIdCardsPage() {
     setLoadingQRCodes(prev => new Set([...prev, teacher.uid]));
 
     try {
-      const { qrCode } = await QRUtils.generateStudentQR(
+      const { qrCode } = await QRUtils.generateTeacherQR(
         teacher.uid,
-        'iqra-school',
+        schoolId,
+        schoolName,
         teacher.subject || 'Teacher'
       );
       setQrCodes(prev => new Map(prev.set(teacher.uid, qrCode)));
@@ -232,17 +268,20 @@ function TeacherIdCardsPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: true },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -329,10 +368,21 @@ function TeacherIdCardsPage() {
 
               <div className="flex items-center space-x-4 h-full">
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">
-                    {user?.email?.charAt(0).toUpperCase()}
-                  </span>
+                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                  {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                    <img
+                      src={(userData as any)?.photoURL || user?.photoURL || ''}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => {
+                        setImageError(true);
+                      }}
+                    />
+                  ) : (
+                    <span className="text-white font-medium text-sm">
+                      {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

@@ -6,6 +6,7 @@ export interface User {
   schoolId?: string; // Not applicable for super_admin
   profileImage?: string;
   phone?: string;
+  studentId?: string; // For students
   createdAt: Date;
   updatedAt: Date;
   isActive: boolean;
@@ -42,10 +43,14 @@ export interface Student {
   id: string;
   schoolId: string;
   classId: string;
-  rollNumber: string;
+  studentId: string;
   name: string;
   fatherName: string;
+  fatherPhone?: string;
+  fatherOccupation?: string;
   motherName: string;
+  motherPhone?: string;
+  motherOccupation?: string;
   dateOfBirth: Date;
   address: string;
   phone?: string;
@@ -58,6 +63,19 @@ export interface Student {
   createdAt: Date;
   updatedAt: Date;
   isActive: boolean;
+  gender?: string;
+  emergencyContact?: string;
+  emergencyRelation?: string;
+  presentAddress?: string;
+  permanentAddress?: string;
+  city?: string;
+  district?: string;
+  postalCode?: string;
+  previousSchool?: string;
+  previousClass?: string;
+  previousSchoolAddress?: string;
+  reasonForLeaving?: string;
+  previousGPA?: string;
 }
 
 export interface AttendanceRecord {
@@ -109,8 +127,8 @@ export interface Notification {
   message: string;
   type: 'attendance' | 'announcement' | 'alert';
   isRead: boolean;
-  createdAt: Date;
-  updatedAt: Date;
+  createdAt: Date | any; // Allow Timestamp for Firestore
+  updatedAt: Date | any; // Allow Timestamp for Firestore
 }
 
 // Utility types for API responses
@@ -139,7 +157,7 @@ export interface StudentRegistrationForm {
   address: string;
   phone?: string;
   email?: string;
-  rollNumber: string;
+  studentId: string;
   classId: string;
   guardianPhone: string;
   guardianEmail?: string;

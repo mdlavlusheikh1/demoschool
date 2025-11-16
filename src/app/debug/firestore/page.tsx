@@ -258,9 +258,9 @@ export default function FirestoreDebugPage() {
         <div className="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
           <h3 className="font-medium text-blue-900 mb-2">Current Firebase Project</h3>
           <div className="text-sm text-blue-800 space-y-1">
-            <p><strong>Project ID:</strong> {process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID}</p>
-            <p><strong>Auth Domain:</strong> {process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}</p>
-            <p><strong>Database URL:</strong> {process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL}</p>
+            <p><strong>Project ID:</strong> iqra-nuranu-academy</p>
+            <p><strong>Auth Domain:</strong> iqra-nuranu-academy.firebaseapp.com</p>
+            <p><strong>Storage Bucket:</strong> iqra-nuranu-academy.firebasestorage.app</p>
           </div>
         </div>
       </div>

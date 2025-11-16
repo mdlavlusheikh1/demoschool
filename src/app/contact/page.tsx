@@ -18,9 +18,14 @@ import {
   Youtube,
   Globe
 } from 'lucide-react';
+import { settingsQueries, SystemSettings } from '@/lib/database-queries';
+import { db } from '@/lib/firebase';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { SCHOOL_ID } from '@/lib/constants';
 
 const PublicContactPage = () => {
   const [loading, setLoading] = useState(true);
+  const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -32,52 +37,51 @@ const PublicContactPage = () => {
   const [submitStatus, setSubmitStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
   useEffect(() => {
-    try {
-      const loadPage = async () => {
-        try {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          setLoading(false);
-        } catch (error) {
-          console.error('Error in loadPage:', error);
-          setLoading(false);
-        }
-      };
-      
-      loadPage();
-    } catch (error) {
-      console.error('Error in useEffect:', error);
-      setLoading(false);
-    }
+    const loadSettings = async () => {
+      setLoading(true);
+      try {
+        // Use one-time fetch instead of real-time listener for better performance
+        const data = await settingsQueries.getSettings();
+        setSettings(data);
+      } catch (error) {
+        console.error('Error loading settings:', error);
+        setSettings(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadSettings();
   }, []);
 
   const contactInfo = [
     {
       icon: Phone,
       title: 'ফোন',
-      details: ['+৮৮০ ১৭১১ ২৩৪৫৬৭', '+৮৮০ ১৯১১ ২৩৪৫৬৭'],
+      details: settings?.contactPhones || ['+৮৮০ ১৭১১ ২৩৪৫৬৭', '+৮৮০ ১৯১১ ২৩৪৫৬৭'],
       color: 'text-green-600'
     },
     {
       icon: Mail,
       title: 'ইমেইল',
-      details: ['info@iqraschool.edu', 'admission@iqraschool.edu'],
+      details: settings?.contactEmails || ['info@iqraschool.edu', 'admission@iqraschool.edu'],
       color: 'text-blue-600'
     },
     {
       icon: MapPin,
       title: 'ঠিকানা',
-      details: ['রামপুরা, ঢাকা-১২১৯', 'বাংলাদেশ'],
+      details: settings?.contactAddress || ['রামপুরা, ঢাকা-১২১৯', 'বাংলাদেশ'],
       color: 'text-red-600'
     },
     {
       icon: Clock,
       title: 'সময়',
-      details: ['রবি-বৃহ: সকাল ৮টা - বিকাল ৫টা', 'শুক্র: সকাল ৮টা - দুপুর ১২টা'],
+      details: settings?.contactHours || ['রবি-বৃহ: সকাল ৮টা - বিকাল ৫টা', 'শুক্র: সকাল ৮টা - দুপুর ১২টা'],
       color: 'text-purple-600'
     }
   ];
 
-  const departments = [
+  const departments = settings?.contactDepartments || [
     {
       name: 'ভর্তি বিভাগ',
       phone: '+৮৮০ ১৭১১ ২৩৪৫৬৭',
@@ -115,10 +119,25 @@ const PublicContactPage = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
+    setSubmitStatus('idle');
     
-    // Simulate form submission
     try {
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Save contact message to Firestore
+      const messageData = {
+        name: formData.name.trim(),
+        email: formData.email.trim(),
+        phone: formData.phone.trim() || '',
+        subject: formData.subject.trim(),
+        message: formData.message.trim(),
+        schoolId: SCHOOL_ID,
+        status: 'new' as const,
+        read: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
+      await addDoc(collection(db, 'contactMessages'), messageData);
+      
       setSubmitStatus('success');
       setFormData({
         name: '',
@@ -128,6 +147,7 @@ const PublicContactPage = () => {
         message: ''
       });
     } catch (error) {
+      console.error('Error submitting contact form:', error);
       setSubmitStatus('error');
     } finally {
       setIsSubmitting(false);
@@ -161,9 +181,9 @@ const PublicContactPage = () => {
                 <MessageCircle className="w-8 h-8 text-white" />
               </div>
             </div>
-            <h1 className="text-4xl font-bold mb-4">যোগাযোগ করুন</h1>
+            <h1 className="text-4xl font-bold mb-4">{settings?.contactPageTitle || 'যোগাযোগ করুন'}</h1>
             <p className="text-xl text-blue-100 max-w-3xl mx-auto">
-              আমাদের সাথে যোগাযোগ করে আপনার প্রশ্নের উত্তর পান এবং আমাদের সম্পর্কে আরও জানুন
+              {settings?.contactPageSubtitle || 'আমাদের সাথে যোগাযোগ করে আপনার প্রশ্নের উত্তর পান এবং আমাদের সম্পর্কে আরও জানুন'}
             </p>
           </div>
         </div>
@@ -270,12 +290,9 @@ const PublicContactPage = () => {
                     required
                   >
                     <option value="">বিষয় নির্বাচন করুন</option>
-                    <option value="admission">ভর্তি সংক্রান্ত</option>
-                    <option value="academic">শিক্ষা সংক্রান্ত</option>
-                    <option value="fee">ফি সংক্রান্ত</option>
-                    <option value="general">সাধারণ তথ্য</option>
-                    <option value="complaint">অভিযোগ</option>
-                    <option value="suggestion">পরামর্শ</option>
+                    {(settings?.contactFormSubjects || ['ভর্তি সংক্রান্ত', 'শিক্ষা সংক্রান্ত', 'ফি সংক্রান্ত', 'সাধারণ তথ্য', 'অভিযোগ', 'পরামর্শ']).map((subject, idx) => (
+                      <option key={idx} value={subject.toLowerCase().replace(/\s+/g, '_')}>{subject}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -341,38 +358,58 @@ const PublicContactPage = () => {
               </div>
             </div>
 
-            {/* Map Placeholder */}
+            {/* Map */}
             <div className="bg-white rounded-2xl shadow-lg p-8">
               <h2 className="text-2xl font-bold text-gray-900 mb-6">আমাদের অবস্থান</h2>
-              <div className="bg-gray-200 rounded-lg h-64 flex items-center justify-center">
-                <div className="text-center text-gray-500">
-                  <MapPin className="w-12 h-12 mx-auto mb-4" />
-                  <p>মানচিত্র এখানে দেখানো হবে</p>
-                  <p className="text-sm">রামপুরা, ঢাকা-১২১৯</p>
+              {settings?.contactMapEmbedCode ? (
+                <div 
+                  className="rounded-lg overflow-hidden h-64"
+                  dangerouslySetInnerHTML={{ __html: settings.contactMapEmbedCode }}
+                />
+              ) : (
+                <div className="bg-gray-200 rounded-lg h-64 flex items-center justify-center">
+                  <div className="text-center text-gray-500">
+                    <MapPin className="w-12 h-12 mx-auto mb-4" />
+                    <p>মানচিত্র এখানে দেখানো হবে</p>
+                    <p className="text-sm">{settings?.contactMapAddress || 'রামপুরা, ঢাকা-১২১৯'}</p>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
             {/* Social Media */}
             <div className="bg-white rounded-2xl shadow-lg p-8">
               <h2 className="text-2xl font-bold text-gray-900 mb-6">সামাজিক যোগাযোগ</h2>
               <div className="grid grid-cols-2 gap-4">
-                <a href="#" className="flex items-center space-x-3 p-3 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors">
-                  <Facebook className="w-6 h-6 text-blue-600" />
-                  <span className="text-gray-700">Facebook</span>
-                </a>
-                <a href="#" className="flex items-center space-x-3 p-3 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors">
-                  <Twitter className="w-6 h-6 text-blue-400" />
-                  <span className="text-gray-700">Twitter</span>
-                </a>
-                <a href="#" className="flex items-center space-x-3 p-3 bg-pink-50 rounded-lg hover:bg-pink-100 transition-colors">
-                  <Instagram className="w-6 h-6 text-pink-600" />
-                  <span className="text-gray-700">Instagram</span>
-                </a>
-                <a href="#" className="flex items-center space-x-3 p-3 bg-red-50 rounded-lg hover:bg-red-100 transition-colors">
-                  <Youtube className="w-6 h-6 text-red-600" />
-                  <span className="text-gray-700">YouTube</span>
-                </a>
+                {settings?.contactSocialMedia?.facebook && (
+                  <a href={settings.contactSocialMedia.facebook} target="_blank" rel="noopener noreferrer" className="flex items-center space-x-3 p-3 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors">
+                    <Facebook className="w-6 h-6 text-blue-600" />
+                    <span className="text-gray-700">Facebook</span>
+                  </a>
+                )}
+                {settings?.contactSocialMedia?.twitter && (
+                  <a href={settings.contactSocialMedia.twitter} target="_blank" rel="noopener noreferrer" className="flex items-center space-x-3 p-3 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors">
+                    <Twitter className="w-6 h-6 text-blue-400" />
+                    <span className="text-gray-700">Twitter</span>
+                  </a>
+                )}
+                {settings?.contactSocialMedia?.instagram && (
+                  <a href={settings.contactSocialMedia.instagram} target="_blank" rel="noopener noreferrer" className="flex items-center space-x-3 p-3 bg-pink-50 rounded-lg hover:bg-pink-100 transition-colors">
+                    <Instagram className="w-6 h-6 text-pink-600" />
+                    <span className="text-gray-700">Instagram</span>
+                  </a>
+                )}
+                {settings?.contactSocialMedia?.youtube && (
+                  <a href={settings.contactSocialMedia.youtube} target="_blank" rel="noopener noreferrer" className="flex items-center space-x-3 p-3 bg-red-50 rounded-lg hover:bg-red-100 transition-colors">
+                    <Youtube className="w-6 h-6 text-red-600" />
+                    <span className="text-gray-700">YouTube</span>
+                  </a>
+                )}
+                {(!settings?.contactSocialMedia?.facebook && !settings?.contactSocialMedia?.twitter && !settings?.contactSocialMedia?.instagram && !settings?.contactSocialMedia?.youtube) && (
+                  <div className="col-span-2 text-center text-gray-500 py-4">
+                    সামাজিক যোগাযোগের লিঙ্ক এখনো যোগ করা হয়নি
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -388,12 +425,12 @@ const PublicContactPage = () => {
                 <span className="text-white font-bold text-lg">ই</span>
               </div>
             </div>
-            <h3 className="text-xl font-bold mb-2">আমার স্কুল</h3>
-            <p className="text-gray-400 mb-4">ভালোবাসা দিয়ে শিক্ষা, ইসলামিক মূল্যবোধে জীবন গড়া</p>
+            <h3 className="text-xl font-bold mb-2">{settings?.schoolName || 'আমার স্কুল'}</h3>
+            <p className="text-gray-400 mb-4">{settings?.schoolDescription || 'ভালোবাসা দিয়ে শিক্ষা, ইসলামিক মূল্যবোধে জীবন গড়া'}</p>
             <div className="flex justify-center space-x-6 text-sm text-gray-400">
-              <span>📞 +৮৮০ ১৭১১ ২৩৪৫৬৭</span>
-              <span>✉️ info@iqraschool.edu</span>
-              <span>📍 ঢাকা, বাংলাদেশ</span>
+              <span>📞 {settings?.schoolPhone || '+৮৮০ ১৭১১ ২৩৪৫৬৭'}</span>
+              <span>✉️ {settings?.schoolEmail || 'info@iqraschool.edu'}</span>
+              <span>📍 {settings?.schoolAddress || 'ঢাকা, বাংলাদেশ'}</span>
             </div>
           </div>
         </div>

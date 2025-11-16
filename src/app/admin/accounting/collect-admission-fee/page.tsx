@@ -7,8 +7,9 @@ import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
-import { studentQueries, accountingQueries, feeQueries, inventoryQueries, InventoryItem } from '@/lib/database-queries';
+import { studentQueries, accountingQueries, feeQueries, settingsQueries, inventoryQueries } from '@/lib/database-queries';
 import { SCHOOL_ID } from '@/lib/constants';
+import { exportAdmissionFeeCollectionToPDF, exportAdmissionFeeCollectionToDOCX } from '@/lib/export-utils';
 import {
   Home,
   Users,
@@ -43,11 +44,29 @@ import {
   CheckCircle,
   Clock,
   Award,
-  FileText
+  FileText,
+  Globe,
+  MessageSquare,
+  AlertCircle,
+  Sparkles,
+  Gift,
+  BookOpen as BookOpenIcon,
+  Users as UsersIcon,
+  Bell as BellIcon
 } from 'lucide-react';
+
+interface InventoryItem {
+  id?: string;
+  name: string;
+  unitPrice: number;
+  sellingPrice?: number;
+  quantity?: number;
+  unit?: string;
+}
 
 interface AdmissionStudent {
   studentId: string;
+  uid?: string; // Firebase UID for fetching student data
   studentName: string;
   admissionNumber: string;
   className: string;
@@ -59,12 +78,25 @@ interface AdmissionStudent {
   totalAdmissionFees: number;
   paidAmount: number;
   dueAmount: number;
+  totalDiscount: number;
   status: 'paid' | 'partial' | 'due';
   paymentDate?: string;
+  rollNumber?: string;
+  // Collection status fields
+  lastCollectedBy?: string;
+  lastCollectionDate?: string;
+  collectionCount?: number;
 }
 
+// Helper function to convert numbers to Bengali numerals
+const toBengaliNumerals = (num: number | undefined | null): string => {
+  if (num === undefined || num === null || isNaN(num)) return '০';
+  const bengaliDigits = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+  const formatted = num.toLocaleString('en-US');
+  return formatted.replace(/\d/g, (digit) => bengaliDigits[parseInt(digit)]);
+};
+
 function CollectAdmissionFeePage() {
-  const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -119,8 +151,17 @@ function CollectAdmissionFeePage() {
   // Sales state
   const [totalSales, setTotalSales] = useState(0);
 
+  // Export states
+  const [isExporting, setIsExporting] = useState(false);
+  const [schoolLogo, setSchoolLogo] = useState<string>('');
+  const [schoolSettings, setSchoolSettings] = useState<any>(null);
+
+  // Sorting state
+  const [sortBy, setSortBy] = useState<string>('name');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+
   const router = useRouter();
-  const { userData } = useAuth();
+  const { user: authUser, userData } = useAuth();
 
   // Auto-calculation effect for due amount
   useEffect(() => {
@@ -141,10 +182,10 @@ function CollectAdmissionFeePage() {
   }, [formData.paidAmount, formData.discount, selectedStudent]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setUser(user);
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
         loadData();
+        loadSchoolSettings();
       } else {
         router.push('/auth/login');
       }
@@ -153,6 +194,20 @@ function CollectAdmissionFeePage() {
 
     return () => unsubscribe();
   }, [router]);
+
+  const loadSchoolSettings = async () => {
+    try {
+      const settings = await settingsQueries.getSettings();
+      if (settings) {
+        setSchoolSettings(settings);
+        if ((settings as any).logo || (settings as any).schoolLogo) {
+          setSchoolLogo((settings as any).logo || (settings as any).schoolLogo);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading school settings:', error);
+    }
+  };
 
   const loadData = async () => {
     try {
@@ -164,6 +219,8 @@ function CollectAdmissionFeePage() {
       console.log('📊 Students loaded:', studentsData.length);
       console.log('📋 Student details:', studentsData.map(s => ({
         uid: s.uid,
+        studentId: (s as any).studentId,
+        studentID: (s as any).studentID,
         name: s.name || s.displayName,
         class: s.class,
         role: s.role
@@ -201,18 +258,54 @@ function CollectAdmissionFeePage() {
         .filter(student => student.role === 'student') // Only process students
         .map((student, index) => {
           console.log(`🔄 Processing student ${index + 1}:`, student.name || student.displayName);
+          console.log(`📋 Student data:`, {
+            uid: student.uid,
+            studentId: (student as any).studentId,
+            studentID: (student as any).studentID,
+            allKeys: Object.keys(student)
+          });
 
           // Generate admission number if not exists
           const admissionNumber = (student as any).admissionNumber || `ADMS-2025-${Math.floor(Math.random() * 9000) + 1000}`;
           console.log(`🎫 Admission number: ${admissionNumber}`);
 
           // Find existing admission fee payments for this student
-          const admissionTransactions = existingTransactions.filter(t =>
-            t.studentId === student.uid &&
-            (t.category === 'admission_fee' || t.category === 'session_fee' || t.category === 'registration_fee') &&
-            t.status === 'completed'
-          );
-          console.log(`💳 Found ${admissionTransactions.length} existing transactions for student`);
+          // Check both uid and studentId to match transactions
+          const studentObj = student as any;
+          const displayStudentId = studentObj.studentId || 
+                                   studentObj.studentID || 
+                                   studentObj.id ||
+                                   (studentObj.uid && studentObj.uid.startsWith('STD') ? studentObj.uid : null) ||
+                                   null;
+          const finalStudentId = displayStudentId || student.uid;
+          
+          const admissionTransactions = existingTransactions.filter(t => {
+            // Match by uid or studentId (transaction might have either)
+            const matchesStudent = t.studentId === student.uid || 
+                                  t.studentId === finalStudentId ||
+                                  (t as any).uid === student.uid;
+            
+            // Match by category
+            const matchesCategory = t.category === 'admission_fee' || 
+                                   t.category === 'session_fee' || 
+                                   t.category === 'registration_fee';
+            
+            // Match by status
+            const matchesStatus = t.status === 'completed';
+            
+            return matchesStudent && matchesCategory && matchesStatus;
+          });
+          console.log(`💳 Found ${admissionTransactions.length} existing transactions for student`, {
+            uid: student.uid,
+            studentId: finalStudentId,
+            transactions: admissionTransactions.map(t => ({
+              id: t.id,
+              studentId: t.studentId,
+              category: t.category,
+              paidAmount: t.paidAmount,
+              amount: t.amount
+            }))
+          });
 
           // Calculate fees based on active fee structure
           const admissionFee = admissionFees.find(f => f.feeName === 'ভর্তি ফি')?.amount || 2000;
@@ -232,14 +325,46 @@ function CollectAdmissionFeePage() {
           }
 
           // Calculate fees based on student type
-          const paidAmount = admissionTransactions.reduce((sum, t) => sum + (t.paidAmount || 0), 0);
+          // Use paidAmount if available, otherwise use amount
+          const paidAmount = admissionTransactions.reduce((sum, t) => {
+            const transactionAmount = t.paidAmount || t.amount || 0;
+            return sum + transactionAmount;
+          }, 0);
+          const totalDiscount = admissionTransactions.reduce((sum, t) => sum + ((t as any).discount || 0), 0);
+          
+          console.log(`💰 Payment calculation for ${student.name || student.displayName}:`, {
+            transactionsCount: admissionTransactions.length,
+            paidAmount,
+            totalDiscount,
+            admissionFee: studentType === 'new_admission' ? admissionFee : 0,
+            sessionFee: (studentType === 'promoted' || studentType === 'imported') ? sessionFee : 0,
+            transactions: admissionTransactions.map(t => ({
+              id: t.id,
+              paidAmount: t.paidAmount,
+              amount: t.amount,
+              discount: (t as any).discount
+            }))
+          });
+          
+          // Get collection information from transactions
+          const lastTransaction = admissionTransactions.length > 0 
+            ? admissionTransactions.sort((a, b) => {
+                const dateA = new Date(a.collectionDate || a.date || 0).getTime();
+                const dateB = new Date(b.collectionDate || b.date || 0).getTime();
+                return dateB - dateA; // Sort descending to get latest first
+              })[0]
+            : null;
+          
+          const lastCollectedBy = lastTransaction?.collectedBy || lastTransaction?.recordedBy || undefined;
+          const lastCollectionDate = lastTransaction?.collectionDate || lastTransaction?.date || undefined;
+          const collectionCount = admissionTransactions.length;
 
           // Calculate due amount based on student type
           let dueAmount = 0;
           if (studentType === 'new_admission') {
-            dueAmount = Math.max(0, admissionFee - paidAmount);
+            dueAmount = Math.max(0, admissionFee - paidAmount - totalDiscount);
           } else if (studentType === 'promoted' || studentType === 'imported') {
-            dueAmount = Math.max(0, sessionFee - paidAmount);
+            dueAmount = Math.max(0, sessionFee - paidAmount - totalDiscount);
           }
 
           // Calculate total for reference (not used for due calculation)
@@ -247,19 +372,38 @@ function CollectAdmissionFeePage() {
             ? admissionFee + sessionFee + registrationFee
             : sessionFee;
 
+          // Calculate status based on due amount (more accurate)
           let status: 'paid' | 'partial' | 'due' = 'due';
-          if (paidAmount === 0) {
-            status = 'due';
-          } else if (paidAmount >= totalAdmissionFees) {
-            status = 'paid';
+          if (dueAmount === 0 && paidAmount > 0) {
+            status = 'paid'; // Fully paid if due is 0 and something was paid
+          } else if (paidAmount === 0) {
+            status = 'due'; // Nothing paid yet
           } else {
-            status = 'partial';
+            status = 'partial'; // Partially paid
           }
+          
+          console.log(`📊 Status calculation:`, {
+            paidAmount,
+            dueAmount,
+            totalDiscount,
+            status,
+            expectedFee: studentType === 'new_admission' ? admissionFee : sessionFee
+          });
 
           console.log(`✅ Student processed: ${student.name || student.displayName} - Status: ${status}, Due: ৳${dueAmount}`);
-
+          
+          console.log(`🆔 Student ID resolved:`, {
+            uid: student.uid,
+            studentId: studentObj.studentId,
+            studentID: studentObj.studentID,
+            id: studentObj.id,
+            resolved: displayStudentId,
+            final: finalStudentId
+          });
+          
           return {
-            studentId: student.uid,
+            studentId: finalStudentId, // Use the already calculated finalStudentId
+            uid: student.uid, // Store Firebase UID for SMS lookup
             studentName: student.name || student.displayName || 'Unknown Student',
             admissionNumber: admissionNumber,
             className: student.class || 'N/A',
@@ -271,8 +415,12 @@ function CollectAdmissionFeePage() {
             totalAdmissionFees,
             paidAmount,
             dueAmount,
+            totalDiscount,
             status,
-            paymentDate: admissionTransactions.length > 0 ? admissionTransactions[0].date : undefined
+            paymentDate: admissionTransactions.length > 0 ? admissionTransactions[0].date : undefined,
+            lastCollectedBy,
+            lastCollectionDate,
+            collectionCount
           };
         });
 
@@ -305,7 +453,7 @@ function CollectAdmissionFeePage() {
     }
   };
 
-  // Filter students based on search criteria
+  // Filter and sort students based on search criteria
   useEffect(() => {
     let filtered = admissionStudents;
 
@@ -316,10 +464,10 @@ function CollectAdmissionFeePage() {
       );
     }
 
-    // Filter by admission number
+    // Filter by student ID
     if (searchAdmissionNumber) {
       filtered = filtered.filter(student =>
-        student.admissionNumber.toLowerCase().includes(searchAdmissionNumber.toLowerCase())
+        student.studentId.toLowerCase().includes(searchAdmissionNumber.toLowerCase())
       );
     }
 
@@ -328,9 +476,54 @@ function CollectAdmissionFeePage() {
       filtered = filtered.filter(student => student.className === selectedClass);
     }
 
+    // Apply sorting
+    filtered.sort((a, b) => {
+      let aValue: any;
+      let bValue: any;
+
+      switch (sortBy) {
+        case 'name':
+          aValue = (a.studentName || '').toLowerCase();
+          bValue = (b.studentName || '').toLowerCase();
+          break;
+        case 'admission':
+          aValue = (a.studentId || '').toLowerCase();
+          bValue = (b.studentId || '').toLowerCase();
+          break;
+        case 'class':
+          aValue = (a.className || '').toLowerCase();
+          bValue = (b.className || '').toLowerCase();
+          break;
+        case 'section':
+          aValue = (a.section || '').toLowerCase();
+          bValue = (b.section || '').toLowerCase();
+          break;
+        case 'paid':
+          aValue = a.paidAmount || 0;
+          bValue = b.paidAmount || 0;
+          break;
+        case 'due':
+          aValue = a.dueAmount || 0;
+          bValue = b.dueAmount || 0;
+          break;
+        case 'status':
+          const statusOrder = { 'paid': 1, 'partial': 2, 'due': 3 };
+          aValue = statusOrder[a.status] || 3;
+          bValue = statusOrder[b.status] || 3;
+          break;
+        default:
+          aValue = (a.studentName || '').toLowerCase();
+          bValue = (b.studentName || '').toLowerCase();
+      }
+
+      if (aValue < bValue) return sortOrder === 'asc' ? -1 : 1;
+      if (aValue > bValue) return sortOrder === 'asc' ? 1 : -1;
+      return 0;
+    });
+
     setFilteredStudents(filtered);
     setCurrentPage(1); // Reset to first page when filters change
-  }, [admissionStudents, searchName, searchAdmissionNumber, selectedClass]);
+  }, [admissionStudents, searchName, searchAdmissionNumber, selectedClass, sortBy, sortOrder]);
 
   // Pagination calculations
   const totalPages = Math.ceil(filteredStudents.length / itemsPerPage);
@@ -357,6 +550,19 @@ function CollectAdmissionFeePage() {
 
   const openPaymentDialog = async (student: AdmissionStudent) => {
     // Check if student payment is already complete
+    // For new_admission students, admission fee should only be collected once
+    if (student.studentType === 'new_admission' && student.dueAmount === 0 && student.paidAmount > 0) {
+      setNotification({
+        show: true,
+        message: `${student.studentName} এর ভর্তি ফি ইতিমধ্যে সম্পূর্ণ পরিশোধিত হয়েছে। ভর্তি ফি শুধুমাত্র একবার সংগ্রহ করা যায়।`,
+        type: 'error'
+      });
+      setTimeout(() => {
+        setNotification({ show: false, message: '', type: 'success' });
+      }, 5000);
+      return;
+    }
+    
     if (student.status === 'paid') {
       setNotification({
         show: true,
@@ -383,39 +589,133 @@ function CollectAdmissionFeePage() {
       setInventoryLoading(false);
     }
 
-    // Generate voucher number
+    // Generate sequential voucher number based on existing transactions
+    const schoolId = SCHOOL_ID;
     const currentYear = new Date().getFullYear().toString();
-    const voucherNumber = `ADM-${currentYear}-${Date.now().toString().slice(-4)}`;
+    
+    try {
+      // Get all existing admission fee transactions for current year
+      const allTransactions = await accountingQueries.getAllTransactions(schoolId);
+      const admissionTransactions = allTransactions.filter((t: any) => {
+        const isAdmissionFee = t.category === 'admission_fee' || t.category === 'session_fee';
+        if (!isAdmissionFee) return false;
+        
+        // Check if voucher number matches current year pattern
+        const voucherYear = t.voucherNumber?.match(/ADM-(\d{4})/)?.[1];
+        return voucherYear === currentYear;
+      });
 
-    // Set form data based on student type - Show what to collect
-    if (student.studentType === 'new_admission') {
-      // For new admission, show the actual due amount that needs to be collected
-      setFormData({
-        admissionFee: student.admissionFee.toString(),
-        sessionFee: student.sessionFee.toString(),
-        registrationFee: student.registrationFee.toString(),
-        paidAmount: '0', // Start with 0 for current payment
-        discount: '0',
-        dueAmount: student.dueAmount.toString(), // Show actual due amount
-        paymentMethod: 'নগদ',
-        date: new Date().toISOString().split('T')[0],
-        voucherNumber,
-        collectedBy: userData?.name || user?.email?.split('@')?.[0] || ''
-      });
-    } else {
-      // For promoted/imported, show the actual due amount that needs to be collected
-      setFormData({
-        admissionFee: '0',
-        sessionFee: student.sessionFee.toString(),
-        registrationFee: '0',
-        paidAmount: '0', // Start with 0 for current payment
-        discount: '0',
-        dueAmount: student.dueAmount.toString(), // Show actual due amount
-        paymentMethod: 'নগদ',
-        date: new Date().toISOString().split('T')[0],
-        voucherNumber,
-        collectedBy: userData?.name || user?.email?.split('@')[0] || ''
-      });
+      // Extract voucher numbers and find the highest sequence number
+      const voucherNumbers = admissionTransactions
+        .map((t: any) => t.voucherNumber)
+        .filter((v: string) => v && v.startsWith(`ADM-${currentYear}-`));
+
+      // Extract sequence numbers (the part after the year)
+      const sequences = voucherNumbers
+        .map((v: string) => {
+          const match = v.match(/ADM-\d{4}-(\d+)/);
+          return match ? parseInt(match[1], 10) : 0;
+        })
+        .filter((n: number) => !isNaN(n) && n > 0);
+
+      // Get the highest sequence number
+      const maxSequence = sequences.length > 0 ? Math.max(...sequences) : 0;
+      
+      // Generate next voucher number
+      const nextSequence = maxSequence + 1;
+      const voucherNumber = `ADM-${currentYear}-${nextSequence.toString().padStart(3, '0')}`;
+      
+      console.log(`📝 Generated voucher number: ${voucherNumber} (sequence: ${nextSequence})`);
+
+      // Get logged-in user's name - fetch latest from Firestore
+      let collectorName = userData?.name || authUser?.displayName || authUser?.email?.split('@')[0] || 'User';
+      if (authUser) {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', authUser.uid));
+          if (userDoc.exists()) {
+            const userDocData = userDoc.data();
+            collectorName = userDocData.name || authUser?.displayName || authUser?.email?.split('@')[0] || 'User';
+          }
+        } catch (error) {
+          console.error('Error fetching latest user name:', error);
+        }
+      }
+
+      // Set form data based on student type - Show what to collect
+      if (student.studentType === 'new_admission') {
+        // For new admission, show the actual due amount that needs to be collected
+        setFormData({
+          admissionFee: student.admissionFee.toString(),
+          sessionFee: student.sessionFee.toString(),
+          registrationFee: student.registrationFee.toString(),
+          paidAmount: '0', // Start with 0 for current payment
+          discount: '0',
+          dueAmount: student.dueAmount.toString(), // Show actual due amount
+          paymentMethod: 'নগদ',
+          date: new Date().toISOString().split('T')[0],
+          voucherNumber,
+          collectedBy: collectorName
+        });
+      } else {
+        // For promoted/imported, show the actual due amount that needs to be collected
+        setFormData({
+          admissionFee: '0',
+          sessionFee: student.sessionFee.toString(),
+          registrationFee: '0',
+          paidAmount: '0', // Start with 0 for current payment
+          discount: '0',
+          dueAmount: student.dueAmount.toString(), // Show actual due amount
+          paymentMethod: 'নগদ',
+          date: new Date().toISOString().split('T')[0],
+          voucherNumber,
+          collectedBy: collectorName
+        });
+      }
+    } catch (error) {
+      console.error('Error generating voucher number:', error);
+      // Fallback to timestamp-based voucher number
+      const fallbackVoucherNumber = `ADM-${currentYear}-${Date.now().toString().slice(-4)}`;
+      // Fetch latest user name from Firestore
+      let collectorName = userData?.name || authUser?.displayName || authUser?.email?.split('@')[0] || 'Admin User';
+      if (authUser) {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', authUser.uid));
+          if (userDoc.exists()) {
+            const userDocData = userDoc.data();
+            collectorName = userDocData.name || authUser?.displayName || authUser?.email?.split('@')[0] || 'Admin User';
+          }
+        } catch (fetchError) {
+          console.error('Error fetching latest user name:', fetchError);
+        }
+      }
+      
+      if (student.studentType === 'new_admission') {
+        setFormData({
+          admissionFee: student.admissionFee.toString(),
+          sessionFee: student.sessionFee.toString(),
+          registrationFee: student.registrationFee.toString(),
+          paidAmount: '0',
+          discount: '0',
+          dueAmount: student.dueAmount.toString(),
+          paymentMethod: 'নগদ',
+          date: new Date().toISOString().split('T')[0],
+          voucherNumber: fallbackVoucherNumber,
+          collectedBy: collectorName
+        });
+      } else {
+        setFormData({
+          admissionFee: '0',
+          sessionFee: student.sessionFee.toString(),
+          registrationFee: '0',
+          paidAmount: '0',
+          discount: '0',
+          dueAmount: student.dueAmount.toString(),
+          paymentMethod: 'নগদ',
+          date: new Date().toISOString().split('T')[0],
+          voucherNumber: fallbackVoucherNumber,
+          collectedBy: collectorName
+        });
+      }
     }
 
     setDialogOpen(true);
@@ -448,6 +748,37 @@ function CollectAdmissionFeePage() {
         return;
       }
 
+      // Prevent collecting admission fee if already fully paid
+      // Admission fee should only be collected once per student
+      if (selectedStudent.studentType === 'new_admission') {
+        // Check if admission fee is already fully paid
+        if (selectedStudent.dueAmount === 0 && selectedStudent.paidAmount > 0) {
+          setNotification({
+            show: true,
+            message: 'এই শিক্ষার্থীর ভর্তি ফি ইতিমধ্যে সম্পূর্ণ পরিশোধিত হয়েছে। ভর্তি ফি শুধুমাত্র একবার সংগ্রহ করা যায়।',
+            type: 'error'
+          });
+          setTimeout(() => {
+            setNotification({ show: false, message: '', type: 'success' });
+          }, 5000);
+          return;
+        }
+        
+        // Check if trying to collect more than the due amount
+        const remainingDue = selectedStudent.dueAmount;
+        if (paidAmount > remainingDue + discount) {
+          setNotification({
+            show: true,
+            message: `আপনি বকেয়া পরিমাণ (৳${toBengaliNumerals(remainingDue)}) এর বেশি সংগ্রহ করতে পারবেন না।`,
+            type: 'error'
+          });
+          setTimeout(() => {
+            setNotification({ show: false, message: '', type: 'success' });
+          }, 5000);
+          return;
+        }
+      }
+
       // Prepare inventory items data for the transaction
       const inventoryItemsData = Object.entries(selectedInventoryItems)
         .map(([itemId, quantity]) => {
@@ -465,6 +796,21 @@ function CollectAdmissionFeePage() {
         })
         .filter((item): item is NonNullable<typeof item> => item !== null);
 
+      // Calculate new amounts before saving
+      const newPaidAmount = selectedStudent.paidAmount + paidAmount;
+      const newDueAmount = Math.max(0, selectedStudent.dueAmount - paidAmount - discount);
+      const newTotalDiscount = selectedStudent.totalDiscount + discount;
+      
+      // Calculate status for this payment
+      let paymentStatus: 'paid' | 'partial' | 'due' = 'due';
+      if (newPaidAmount === 0) {
+        paymentStatus = 'due';
+      } else if (newDueAmount === 0) {
+        paymentStatus = 'paid';
+      } else {
+        paymentStatus = 'partial';
+      }
+
       // Create comprehensive payment record for Firebase
       const paymentRecord = {
         // Basic transaction info
@@ -474,10 +820,11 @@ function CollectAdmissionFeePage() {
         description: `${selectedStudent.studentType === 'new_admission' ? 'ভর্তি ফি' : 'সেশন ফি'} - ${selectedStudent.studentName}`,
         date: formData.date,
         status: 'completed' as const,
+        paymentStatus: paymentStatus, // Add status field
 
         // School and user info
         schoolId,
-        recordedBy: user?.email || 'admin',
+        recordedBy: authUser?.email || 'admin',
         collectionDate: new Date().toISOString(),
         collectedBy: formData.collectedBy,
 
@@ -487,6 +834,7 @@ function CollectAdmissionFeePage() {
 
         // Student details
         studentId: selectedStudent.studentId,
+        uid: selectedStudent.uid || selectedStudent.studentId, // Also save uid for matching
         studentName: selectedStudent.studentName,
         className: selectedStudent.className,
         section: selectedStudent.section,
@@ -521,17 +869,80 @@ function CollectAdmissionFeePage() {
 
       console.log('🔥 Saving payment record to Firebase:', paymentRecord);
 
-      // Save to Firebase using accounting queries
-      await accountingQueries.createTransaction(paymentRecord);
-      console.log('✅ Payment successfully saved to Firebase');
+      // Save to Firebase using accounting queries - this will trigger real-time updates
+      const transactionId = await accountingQueries.createTransaction(paymentRecord);
+      console.log('✅ Payment successfully saved to Firebase with ID:', transactionId);
+      
+      // Verify the transaction was saved by checking if we got an ID back
+      if (!transactionId) {
+        throw new Error('Transaction ID not returned - save may have failed');
+      }
+
+      // Send notification to parent
+      try {
+        const { sendFeePaymentNotification } = await import('@/lib/fee-notification-helper');
+        await sendFeePaymentNotification({
+          studentId: selectedStudent.uid || selectedStudent.studentId,
+          studentName: selectedStudent.studentName,
+          feeType: selectedStudent.studentType === 'new_admission' ? 'admission_fee' : 'session_fee',
+          feeName: selectedStudent.studentType === 'new_admission' ? 'ভর্তি ফি' : 'সেশন ফি',
+          amount: paidAmount,
+          paymentDate: formData.date,
+          voucherNumber: formData.voucherNumber || `ADM-${Date.now()}`,
+          paymentMethod: formData.paymentMethod,
+          collectedBy: formData.collectedBy,
+          transactionId: transactionId,
+          className: selectedStudent.className
+        });
+      } catch (notifError) {
+        console.error('Error sending fee payment notification (non-critical):', notifError);
+      }
+
+      // Update student document in Firebase with new paid/due amounts
+      try {
+        const studentUid = selectedStudent.uid || selectedStudent.studentId;
+        console.log('🔄 Updating student document in Firebase:', studentUid);
+        
+        const studentUpdateData: any = {};
+        
+        // Update admission fee fields based on student type
+        if (selectedStudent.studentType === 'new_admission') {
+          studentUpdateData.admissionFeePaid = newPaidAmount;
+          studentUpdateData.admissionFeeDue = newDueAmount;
+          studentUpdateData.admissionFeeStatus = newDueAmount === 0 ? 'paid' : (newPaidAmount > 0 ? 'partial' : 'due');
+          // Also store in generic fields for compatibility
+          studentUpdateData.paidAmount = newPaidAmount;
+          studentUpdateData.dueAmount = newDueAmount;
+        } else {
+          // For promoted/imported students, update session fee
+          studentUpdateData.sessionFeePaid = newPaidAmount;
+          studentUpdateData.sessionFeeDue = newDueAmount;
+          studentUpdateData.sessionFeeStatus = newDueAmount === 0 ? 'paid' : (newPaidAmount > 0 ? 'partial' : 'due');
+          // Also store in generic fields for compatibility
+          studentUpdateData.paidAmount = newPaidAmount;
+          studentUpdateData.dueAmount = newDueAmount;
+        }
+        
+        // Update common fields
+        studentUpdateData.totalDiscount = newTotalDiscount;
+        studentUpdateData.lastPaymentDate = formData.date;
+        studentUpdateData.lastCollectedBy = formData.collectedBy;
+        studentUpdateData.lastCollectionDate = new Date().toISOString();
+        studentUpdateData.paymentStatus = newDueAmount === 0 ? 'paid' : (newPaidAmount > 0 ? 'partial' : 'due');
+        
+        await studentQueries.updateStudent(studentUid, studentUpdateData);
+        console.log('✅ Student document updated in Firebase:', studentUpdateData);
+      } catch (studentUpdateError) {
+        console.error('⚠️ Error updating student document in Firebase:', studentUpdateError);
+        // Don't fail the entire operation if student update fails
+        // The transaction is already saved, which is the most important part
+      }
 
       // Update local state to reflect the payment
       setAdmissionStudents(prevStudents =>
         prevStudents.map(student => {
           if (student.studentId === selectedStudent.studentId) {
-            const newPaidAmount = student.paidAmount + paidAmount;
             // Fix: Use student's current dueAmount instead of admissionFee for proper discount calculation
-            const newDueAmount = Math.max(0, student.dueAmount - paidAmount - discount);
 
             let newStatus: 'paid' | 'partial' | 'due' = 'due';
             if (newPaidAmount === 0) {
@@ -555,8 +966,12 @@ function CollectAdmissionFeePage() {
               ...student,
               paidAmount: newPaidAmount,
               dueAmount: newDueAmount,
+              totalDiscount: newTotalDiscount,
               status: newStatus,
-              paymentDate: formData.date
+              paymentDate: formData.date,
+              lastCollectedBy: formData.collectedBy,
+              lastCollectionDate: new Date().toISOString(),
+              collectionCount: (student.collectionCount || 0) + 1
             };
           }
           return student;
@@ -569,7 +984,7 @@ function CollectAdmissionFeePage() {
       // Show success notification
       setNotification({
         show: true,
-        message: `ভর্তি ফি সফলভাবে সংগ্রহ করা হয়েছে! পরিমাণ: ৳${paidAmount.toLocaleString()}`,
+        message: `ভর্তি ফি সফলভাবে সংগ্রহ করা হয়েছে! পরিমাণ: ৳${toBengaliNumerals(paidAmount)}`,
         type: 'success'
       });
 
@@ -577,6 +992,9 @@ function CollectAdmissionFeePage() {
       setTimeout(() => {
         setNotification({ show: false, message: '', type: 'success' });
       }, 4000);
+
+      // Note: SMS notifications are handled by sendFeePaymentNotification function above
+      // which checks settings before sending SMS
 
     } catch (error) {
       console.error('❌ Error saving payment to Firebase:', error);
@@ -627,17 +1045,20 @@ function CollectAdmissionFeePage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: BellIcon, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: true },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -711,7 +1132,7 @@ function CollectAdmissionFeePage() {
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
                 <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
                   <span className="text-white font-medium text-sm">
-                    {user?.email?.charAt(0).toUpperCase()}
+                    {authUser?.email?.charAt(0).toUpperCase()}
                   </span>
                 </div>
               </div>
@@ -735,63 +1156,88 @@ function CollectAdmissionFeePage() {
               </button>
             </div>
 
-            {/* Quick Access Cards for Fee Collection Center */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-              {/* Tuition Fee Collection */}
-              <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow cursor-pointer"
-                   onClick={() => router.push('/admin/accounting/collect-salary')}>
-                <div className="flex items-center justify-between mb-4">
-                  <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
-                    <GraduationCap className="w-6 h-6 text-blue-600" />
-                  </div>
-                  <ArrowUpRight className="w-5 h-5 text-gray-400" />
-                </div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">টিউশন ফি আদায়</h3>
-                <p className="text-gray-600 text-sm mb-3">মাসিক টিউশন ফি সংগ্রহ করুন</p>
-                <div className="flex items-center justify-between">
-                  <div className="text-2xl font-bold text-green-600">টিউশন ফি</div>
-                  <div className="text-sm px-2 py-1 rounded-full bg-blue-100 text-blue-800">
-                    মাসিক ফি
-                  </div>
-                </div>
-              </div>
-
-              {/* Exam Fee Collection */}
-              <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow cursor-pointer"
-                   onClick={() => router.push('/admin/accounting/collect-exam-fee')}>
-                <div className="flex items-center justify-between mb-4">
-                  <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
-                    <Award className="w-6 h-6 text-green-600" />
-                  </div>
-                  <ArrowUpRight className="w-5 h-5 text-gray-400" />
-                </div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">পরীক্ষার ফি আদায়</h3>
-                <p className="text-gray-600 text-sm mb-3">পরীক্ষার ফি সংগ্রহ করুন</p>
-                <div className="flex items-center justify-between">
-                  <div className="text-2xl font-bold text-green-600">পরীক্ষা ফি</div>
-                  <div className="text-sm px-2 py-1 rounded-full bg-green-100 text-green-800">
-                    বিভিন্ন পরীক্ষা
-                  </div>
-                </div>
-              </div>
-
-              {/* Admission & Session Fee Collection */}
-              <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 bg-gradient-to-br from-purple-50 to-purple-100">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
-                    <FileText className="w-6 h-6 text-purple-600" />
-                  </div>
-                  <CheckCircle className="w-5 h-5 text-purple-600" />
-                </div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">ভর্তি ও সেশন ফি আদায়</h3>
-                <p className="text-gray-600 text-sm mb-3">ভর্তি এবং সেশন ফি সংগ্রহ করুন</p>
-                <div className="flex items-center justify-between">
-                  <div className="text-2xl font-bold text-purple-600">ভর্তি ফি</div>
-                  <div className="text-sm px-2 py-1 rounded-full bg-purple-100 text-purple-800">
-                    বর্তমান পেজ
-                  </div>
-                </div>
-              </div>
+            {/* Download Buttons */}
+            <div className="mb-6 flex items-center justify-end gap-3">
+              <button
+                onClick={async () => {
+                  if (filteredStudents.length === 0) {
+                    setNotification({
+                      show: true,
+                      message: 'এক্সপোর্ট করার জন্য কমপক্ষে একজন শিক্ষার্থী প্রয়োজন',
+                      type: 'error'
+                    });
+                    setTimeout(() => {
+                      setNotification({ show: false, message: '', type: 'success' });
+                    }, 3000);
+                    return;
+                  }
+                  setIsExporting(true);
+                  try {
+                    await exportAdmissionFeeCollectionToPDF(filteredStudents, 'admission_fee_collection.pdf', schoolLogo, schoolSettings);
+                  } catch (error) {
+                    setNotification({
+                      show: true,
+                      message: 'PDF এক্সপোর্ট করতে সমস্যা হয়েছে',
+                      type: 'error'
+                    });
+                    setTimeout(() => {
+                      setNotification({ show: false, message: '', type: 'success' });
+                    }, 3000);
+                    console.error('Error exporting PDF:', error);
+                  } finally {
+                    setIsExporting(false);
+                  }
+                }}
+                disabled={isExporting || filteredStudents.length === 0}
+                className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-2"
+              >
+                {isExporting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
+                <span>PDF ডাউনলোড</span>
+              </button>
+              <button
+                onClick={async () => {
+                  if (filteredStudents.length === 0) {
+                    setNotification({
+                      show: true,
+                      message: 'এক্সপোর্ট করার জন্য কমপক্ষে একজন শিক্ষার্থী প্রয়োজন',
+                      type: 'error'
+                    });
+                    setTimeout(() => {
+                      setNotification({ show: false, message: '', type: 'success' });
+                    }, 3000);
+                    return;
+                  }
+                  setIsExporting(true);
+                  try {
+                    await exportAdmissionFeeCollectionToDOCX(filteredStudents, 'admission_fee_collection.docx');
+                  } catch (error) {
+                    setNotification({
+                      show: true,
+                      message: 'DOCX এক্সপোর্ট করতে সমস্যা হয়েছে',
+                      type: 'error'
+                    });
+                    setTimeout(() => {
+                      setNotification({ show: false, message: '', type: 'success' });
+                    }, 3000);
+                    console.error('Error exporting DOCX:', error);
+                  } finally {
+                    setIsExporting(false);
+                  }
+                }}
+                disabled={isExporting || filteredStudents.length === 0}
+                className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-2"
+              >
+                {isExporting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
+                <span>DOCX ডাউনলোড</span>
+              </button>
             </div>
 
             {/* Summary Cards - Top Position */}
@@ -814,7 +1260,7 @@ function CollectAdmissionFeePage() {
                   </div>
                 </div>
                 <p className="text-2xl font-bold text-red-600">
-                  ৳{admissionStudents.reduce((sum, student) => sum + student.dueAmount, 0).toLocaleString()}
+                  ৳{toBengaliNumerals(admissionStudents.reduce((sum, student) => sum + student.dueAmount, 0))}
                 </p>
               </div>
 
@@ -826,7 +1272,7 @@ function CollectAdmissionFeePage() {
                   </div>
                 </div>
                 <p className="text-2xl font-bold text-green-600">
-                  ৳{admissionStudents.reduce((sum, student) => sum + student.paidAmount, 0).toLocaleString()}
+                  ৳{toBengaliNumerals(admissionStudents.reduce((sum, student) => sum + student.paidAmount, 0))}
                 </p>
               </div>
 
@@ -847,7 +1293,7 @@ function CollectAdmissionFeePage() {
 
             {/* Search Controls */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                 {/* Search by Name */}
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
@@ -860,12 +1306,12 @@ function CollectAdmissionFeePage() {
                   />
                 </div>
 
-                {/* Search by Admission Number */}
+                {/* Search by Student ID */}
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
                   <input
                     type="text"
-                    placeholder="ভর্তি নম্বর দিয়ে খুঁজুন"
+                    placeholder="শিক্ষার্থী আইডি দিয়ে খুঁজুন"
                     value={searchAdmissionNumber}
                     onChange={(e) => setSearchAdmissionNumber(e.target.value)}
                     className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -886,6 +1332,31 @@ function CollectAdmissionFeePage() {
                   </select>
                 </div>
               </div>
+
+              {/* Sorting Controls */}
+              <div className="flex items-center gap-4 pt-4 border-t border-gray-200">
+                <span className="text-sm font-medium text-gray-700">সাজান:</span>
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                >
+                  <option value="name">নাম</option>
+                  <option value="admission">শিক্ষার্থী আইডি</option>
+                  <option value="class">শ্রেণি</option>
+                  <option value="section">শাখা</option>
+                  <option value="paid">প্রদত্ত পরিমাণ</option>
+                  <option value="due">বাকেয়া পরিমাণ</option>
+                  <option value="status">স্ট্যাটাস</option>
+                </select>
+                <button
+                  onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                  className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2 text-sm"
+                  title={sortOrder === 'asc' ? 'আরোহী' : 'অবরোহী'}
+                >
+                  {sortOrder === 'asc' ? '↑ আরোহী' : '↓ অবরোহী'}
+                </button>
+              </div>
             </div>
 
             {/* Students Table */}
@@ -895,7 +1366,7 @@ function CollectAdmissionFeePage() {
                   <thead className="bg-gray-50">
                     <tr>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        ভর্তি নং
+                        শিক্ষার্থী আইডি
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         নাম
@@ -913,6 +1384,9 @@ function CollectAdmissionFeePage() {
                         স্ট্যাটাস
                       </th>
                       <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        সংগ্রহ স্ট্যাটাস
+                      </th>
+                      <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
                         অ্যাকশন
                       </th>
                     </tr>
@@ -921,7 +1395,7 @@ function CollectAdmissionFeePage() {
                     {currentStudents.map((student) => (
                       <tr key={student.studentId} className="hover:bg-gray-50">
                         <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">
-                          {student.admissionNumber}
+                          {student.studentId}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <div className="flex items-center">
@@ -948,12 +1422,48 @@ function CollectAdmissionFeePage() {
                           {getStatusBadge(student.status)}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-center">
-                          <button
-                            onClick={() => openPaymentDialog(student)}
-                            className="px-3 py-1 bg-blue-600 text-white text-xs font-medium rounded hover:bg-blue-700"
-                          >
-                            সংগ্রহ করুন
-                          </button>
+                          {student.lastCollectedBy ? (
+                            <div className="flex flex-col items-center space-y-1">
+                              <span className="text-xs font-medium text-gray-900">
+                                {student.lastCollectedBy}
+                              </span>
+                              {student.lastCollectionDate && (
+                                <span className="text-xs text-gray-500">
+                                  {new Date(student.lastCollectionDate).toLocaleDateString('bn-BD', {
+                                    year: 'numeric',
+                                    month: 'short',
+                                    day: 'numeric'
+                                  })}
+                                </span>
+                              )}
+                              {student.collectionCount && student.collectionCount > 1 && (
+                                <span className="text-xs text-blue-600">
+                                  ({student.collectionCount} বার)
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-400">এখনও সংগ্রহ হয়নি</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-center">
+                          {/* Disable collect button if admission fee is already fully paid */}
+                          {student.studentType === 'new_admission' && student.dueAmount === 0 && student.paidAmount > 0 ? (
+                            <button
+                              disabled
+                              className="px-3 py-1 bg-gray-300 text-gray-500 text-xs font-medium rounded cursor-not-allowed"
+                              title="ভর্তি ফি ইতিমধ্যে সম্পূর্ণ পরিশোধিত হয়েছে"
+                            >
+                              পরিশোধিত
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => openPaymentDialog(student)}
+                              className="px-3 py-1 bg-blue-600 text-white text-xs font-medium rounded hover:bg-blue-700"
+                            >
+                              সংগ্রহ করুন
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1061,9 +1571,15 @@ function CollectAdmissionFeePage() {
                     : {selectedStudent.studentName}
                   </h2>
                   <p className="text-sm text-gray-600">
-                    ভর্তি নং: {selectedStudent.admissionNumber} | শ্রেণি: {selectedStudent.className} |
+                    রোল: {(selectedStudent.rollNumber || selectedStudent.studentId).replace(/^STD0*/i, '')} | শ্রেণি: {selectedStudent.className} |
                     ধরন: {selectedStudent.studentType === 'new_admission' ? 'নতুন ভর্তি' : selectedStudent.studentType === 'promoted' ? 'উন্নীত' : 'ইমপোর্টেড'}
                   </p>
+                  {selectedStudent.lastCollectedBy && (
+                    <p className="text-xs text-blue-600 mt-1">
+                      সর্বশেষ সংগ্রহ: {selectedStudent.lastCollectedBy} - {selectedStudent.lastCollectionDate ? new Date(selectedStudent.lastCollectionDate).toLocaleDateString('bn-BD') : ''}
+                      {selectedStudent.collectionCount && selectedStudent.collectionCount > 1 && ` (${selectedStudent.collectionCount} বার সংগ্রহ হয়েছে)`}
+                    </p>
+                  )}
                 </div>
                 <button
                   onClick={closeDialog}
@@ -1084,11 +1600,11 @@ function CollectAdmissionFeePage() {
                       <>
                         <div className="flex justify-between items-center">
                           <span className="text-gray-600">ভর্তি ফি পরিমাণ:</span>
-                          <span className="font-medium text-lg">৳{selectedStudent.admissionFee.toLocaleString()}</span>
+                          <span className="font-medium text-lg">৳{toBengaliNumerals(selectedStudent.admissionFee)}</span>
                         </div>
                         <div className="flex justify-between items-center">
                           <span className="text-gray-600">ভর্তি বাকি:</span>
-                          <span className="font-medium text-lg text-red-600">৳{parseFloat(formData.dueAmount || '0').toLocaleString()}</span>
+                          <span className="font-medium text-lg text-red-600">৳{toBengaliNumerals(parseFloat(formData.dueAmount || '0'))}</span>
                         </div>
                       </>
                     )}
@@ -1098,11 +1614,11 @@ function CollectAdmissionFeePage() {
                       <>
                         <div className="flex justify-between items-center">
                           <span className="text-gray-600">সেশন ফি পরিমাণ:</span>
-                          <span className="font-medium text-lg">৳{selectedStudent.sessionFee.toLocaleString()}</span>
+                          <span className="font-medium text-lg">৳{toBengaliNumerals(selectedStudent.sessionFee)}</span>
                         </div>
                         <div className="flex justify-between items-center">
                           <span className="text-gray-600">ভর্তি বাকি:</span>
-                          <span className="font-medium text-lg text-red-600">৳{selectedStudent.dueAmount.toLocaleString()}</span>
+                          <span className="font-medium text-lg text-red-600">৳{toBengaliNumerals(selectedStudent.dueAmount)}</span>
                         </div>
                       </>
                     )}
@@ -1179,7 +1695,7 @@ function CollectAdmissionFeePage() {
                     ) : (
                       <div className="space-y-3 max-h-48 overflow-y-auto">
                         {inventoryItems
-                          .filter(item => item.quantity > 0) // Only show items with available stock
+                          .filter(item => (item.quantity || 0) > 0) // Only show items with available stock
                           .map((item) => {
                             const isSelected = selectedInventoryItems[item.id || ''] > 0;
                             const selectedQuantity = selectedInventoryItems[item.id || ''] || 0;
@@ -1211,13 +1727,13 @@ function CollectAdmissionFeePage() {
                                     <div>
                                       <div className="font-medium text-gray-900">{item.name}</div>
                                       <div className="text-sm text-gray-600">
-                                        স্টক: {item.quantity} {item.unit} | দাম: ৳{(item.sellingPrice || item.unitPrice).toLocaleString()}
+                                        স্টক: {item.quantity || 0} {item.unit} | দাম: ৳{toBengaliNumerals(item.sellingPrice || item.unitPrice)}
                                       </div>
                                     </div>
                                   </div>
                                   <div className="text-right">
                                     <div className="font-medium text-gray-900">
-                                      ৳{itemTotal.toLocaleString()}
+                                      ৳{toBengaliNumerals(itemTotal)}
                                     </div>
                                   </div>
                                 </div>
@@ -1228,11 +1744,12 @@ function CollectAdmissionFeePage() {
                                     <input
                                       type="number"
                                       min="1"
-                                      max={item.quantity}
+                                      max={item.quantity || 0}
                                       value={selectedQuantity}
                                       onChange={(e) => {
                                         const quantity = parseInt(e.target.value) || 0;
-                                        if (quantity <= item.quantity && quantity >= 0) {
+                                        const maxQuantity = item.quantity || 0;
+                                        if (quantity <= maxQuantity && quantity >= 0) {
                                           setSelectedInventoryItems(prev => ({
                                             ...prev,
                                             [item.id || '']: quantity
@@ -1256,13 +1773,13 @@ function CollectAdmissionFeePage() {
                         <div className="flex justify-between items-center font-semibold text-gray-900">
                           <span>মোট মজুদ মূল্য:</span>
                           <span className="text-blue-600">
-                            ৳{Object.entries(selectedInventoryItems).reduce((total, [itemId, quantity]) => {
+                            ৳{toBengaliNumerals(Object.entries(selectedInventoryItems).reduce((total, [itemId, quantity]) => {
                               const item = inventoryItems.find(i => i.id === itemId);
                               if (item && quantity > 0) {
                                 return total + (quantity * (item.sellingPrice || item.unitPrice));
                               }
                               return total;
-                            }, 0).toLocaleString()}
+                            }, 0))}
                           </span>
                         </div>
                       </div>
@@ -1312,7 +1829,7 @@ function CollectAdmissionFeePage() {
                   <label className="block text-sm font-medium text-gray-700 mb-2">আদায়কারি</label>
                   <div className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700 flex items-center">
                     <User className="w-4 h-4 mr-2 text-gray-500" />
-                    {formData.collectedBy || 'লোড হচ্ছে...'}
+                    <span>{formData.collectedBy || (userData?.name || authUser?.displayName || authUser?.email?.split('@')[0] || 'User')}</span>
                   </div>
                 </div>
               </div>

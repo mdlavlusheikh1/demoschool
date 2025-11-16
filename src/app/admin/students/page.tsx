@@ -1,14 +1,16 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/firebase';
-import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
-import { collection, onSnapshot, query, orderBy, where } from 'firebase/firestore';
+import { User as AuthUser, onAuthStateChanged, createUserWithEmailAndPassword, updateEmail } from 'firebase/auth';
+import { collection, onSnapshot, query, orderBy, where, doc, setDoc, getDoc, getDocs, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { SCHOOL_ID, SCHOOL_NAME } from '@/lib/constants';
 import AdminLayout from '@/components/AdminLayout';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { studentQueries, User as StudentUser } from '@/lib/database-queries';
+import { studentQueries, User as StudentUser, settingsQueries } from '@/lib/database-queries';
+import { exportToPDF, exportToExcel, convertStudentsForExport } from '@/lib/export-utils';
 import {
   Home,
   Users,
@@ -39,11 +41,24 @@ import {
   FileText,
   CheckCircle,
   AlertCircle,
+  Award,
+  MessageSquare,
+  Gift,
+  Sparkles,
+  Globe,
+  BookOpen as BookOpenIcon,
+  Users as UsersIcon,
   X as XIcon,
   Grid3X3,
   List,
   MapPin,
-  Calendar as CalendarIcon
+  Calendar as CalendarIcon,
+  Wallet,
+  FolderOpen,
+  UserPlus,
+  Wrench,
+  Loader2,
+  Shield,
 } from 'lucide-react';
 
 function StudentsPage() {
@@ -67,9 +82,41 @@ function StudentsPage() {
   const [studentToDelete, setStudentToDelete] = useState<StudentUser | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [isExporting, setIsExporting] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(10);
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [schoolLogo, setSchoolLogo] = useState<string>('');
+  const [schoolSettings, setSchoolSettings] = useState<any>(null);
+  const [creatingParent, setCreatingParent] = useState<string | null>(null);
+  const [notification, setNotification] = useState<{ show: boolean; message: string; type: 'success' | 'error' }>({
+    show: false,
+    message: '',
+    type: 'success'
+  });
   const router = useRouter();
+
+  // Helper function to format roll number for display
+  const formatRollNumber = (rollNumber: string | undefined): string => {
+    if (!rollNumber) return 'N/A';
+
+    // If roll number is in format "STDxxx", extract just the number part
+    const match = rollNumber.match(/^STD(\d+)$/i);
+    if (match) {
+      return match[1].padStart(4, '0');
+    }
+
+    // If it's already just a number, pad to 4 digits and return
+    const numericRoll = rollNumber.replace(/\D/g, '');
+    if (numericRoll) {
+      return numericRoll.padStart(4, '0');
+    }
+    
+    return rollNumber;
+  };
 
   useEffect(() => {
     if (!auth) return;
@@ -78,6 +125,7 @@ function StudentsPage() {
       if (user) {
         setUser(user);
         await loadStudents();
+        await loadSchoolSettings();
       } else {
         router.push('/auth/login');
       }
@@ -87,6 +135,21 @@ function StudentsPage() {
     return () => unsubscribe();
   }, [router]);
 
+  // Load school settings and logo
+  const loadSchoolSettings = async () => {
+    try {
+      const settings = await settingsQueries.getSettings();
+      setSchoolSettings(settings);
+      if ((settings as any)?.schoolLogo) {
+        setSchoolLogo((settings as any).schoolLogo);
+      } else if ((settings as any)?.websiteLogo) {
+        setSchoolLogo((settings as any).websiteLogo);
+      }
+    } catch (error) {
+      console.error('Error loading school settings:', error);
+    }
+  };
+
   // Real-time listener for students
   useEffect(() => {
     if (!user) return;
@@ -95,8 +158,9 @@ function StudentsPage() {
     setError('');
 
     const q = query(
-      collection(db, 'users'),
+      collection(db, 'students'),
       where('role', '==', 'student'),
+      where('schoolId', '==', '102330'), // Add school filtering
       where('isActive', '==', true),
       orderBy('createdAt', 'desc')
     );
@@ -123,6 +187,10 @@ function StudentsPage() {
     return () => unsubscribe();
   }, [user]);
 
+  useEffect(() => {
+    setSelectedStudentIds(prev => prev.filter(id => students.some(student => student.uid === id)));
+  }, [students]);
+
   const loadStudents = async () => {
     if (!user) return;
 
@@ -134,15 +202,96 @@ function StudentsPage() {
       const timestamp = new Date().getTime();
       console.log(`🔄 Loading students at ${timestamp}`);
 
-      const studentsData = await studentQueries.getAllStudents(); // Only load active students (default behavior)
+      const studentsData = await studentQueries.getStudentsBySchool('102330'); // Filter by school
       setStudents(studentsData);
 
-      console.log(`✅ Loaded ${studentsData.length} active students`);
+      console.log(`✅ Loaded ${studentsData.length} students for school`);
     } catch (error) {
       console.error('❌ Error loading students:', error);
       setError('শিক্ষার্থী লোড করতে সমস্যা হয়েছে');
     } finally {
       setStudentsLoading(false);
+    }
+  };
+
+  const toggleStudentSelection = (studentId: string) => {
+    setSelectedStudentIds(prev =>
+      prev.includes(studentId)
+        ? prev.filter(id => id !== studentId)
+        : [...prev, studentId]
+    );
+  };
+
+  const isStudentSelected = (studentId: string) => selectedStudentIds.includes(studentId);
+
+  const selectAllCurrentPage = () => {
+    const pageIds = paginatedStudents.map(student => student.uid);
+    const allSelected = pageIds.every(id => selectedStudentIds.includes(id));
+
+    if (allSelected) {
+      setSelectedStudentIds(prev => prev.filter(id => !pageIds.includes(id)));
+    } else {
+      setSelectedStudentIds(prev => Array.from(new Set([...prev, ...pageIds])));
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedStudentIds([]);
+  };
+
+  const handleOpenBulkDelete = () => {
+    if (selectedStudentIds.length === 0) {
+      return;
+    }
+    setShowBulkDeleteModal(true);
+  };
+
+  const handleCancelBulkDelete = () => {
+    if (isBulkDeleting) {
+      return;
+    }
+    setShowBulkDeleteModal(false);
+  };
+
+  const handleConfirmBulkDelete = async () => {
+    if (selectedStudentIds.length === 0) {
+      return;
+    }
+
+    setIsBulkDeleting(true);
+    const idsToDelete = [...selectedStudentIds];
+    const failedIds: string[] = [];
+
+    try {
+      for (const id of idsToDelete) {
+        try {
+          await studentQueries.deleteStudent(id);
+        } catch (error) {
+          console.error('❌ Error deleting student:', error);
+          failedIds.push(id);
+        }
+      }
+
+      if (typeof window !== 'undefined' && 'caches' in window) {
+        const cacheNames = await caches.keys();
+        await Promise.all(cacheNames.map(name => caches.delete(name)));
+      }
+
+      await loadStudents();
+
+      if (failedIds.length > 0) {
+        setError(`কিছু শিক্ষার্থী মুছে ফেলতে সমস্যা হয়েছে (${failedIds.length} জন)।`);
+        setSelectedStudentIds(failedIds);
+      } else {
+        setError('');
+        setSelectedStudentIds([]);
+        setShowBulkDeleteModal(false);
+      }
+    } catch (error) {
+      console.error('❌ Error deleting selected students:', error);
+      setError('চিহ্নিত শিক্ষার্থী মুছে ফেলতে সমস্যা হয়েছে।');
+    } finally {
+      setIsBulkDeleting(false);
     }
   };
 
@@ -156,6 +305,7 @@ function StudentsPage() {
       console.error('Logout error:', error);
     }
   };
+
 
   const handleViewStudent = (student: StudentUser) => {
     router.push(`/admin/students/view?id=${student.uid}`);
@@ -183,6 +333,8 @@ function StudentsPage() {
         await Promise.all(cacheNames.map(name => caches.delete(name)));
       }
 
+      setSelectedStudentIds(prev => prev.filter(id => id !== studentToDelete.uid));
+
       await loadStudents();
       setError('');
       setShowDeleteModal(false);
@@ -202,6 +354,331 @@ function StudentsPage() {
     setStudentToDelete(null);
   };
 
+  // Create parent account function
+  const handleCreateParentAccount = async (student: StudentUser) => {
+    if (!student) return;
+
+    // Get parent information from student (prioritize father, then mother, then guardian)
+    const parentName = student.fatherName || student.motherName || student.guardianName || '';
+    const parentPhone = (student as any).fatherPhone || (student as any).motherPhone || student.guardianPhone || student.phoneNumber || '';
+    const studentEmail = student.email || '';
+
+    if (!parentName || !parentPhone) {
+      setNotification({
+        show: true,
+        message: 'অভিভাবকের নাম এবং ফোন নম্বর প্রয়োজন',
+        type: 'error'
+      });
+      setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 3000);
+      return;
+    }
+
+    if (!studentEmail) {
+      setNotification({
+        show: true,
+        message: 'শিক্ষার্থীর ইমেইল প্রয়োজন',
+        type: 'error'
+      });
+      setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 3000);
+      return;
+    }
+
+    setCreatingParent(student.uid);
+
+    try {
+      // Clean phone number first (remove any non-digit characters)
+      const cleanPhone = parentPhone.replace(/\D/g, ''); // Remove non-digits
+      
+      // Validate that we have a valid phone number for password
+      if (!cleanPhone || cleanPhone.length < 10) {
+        setNotification({
+          show: true,
+          message: 'অভিভাবকের সঠিক ফোন নম্বর প্রয়োজন (কমপক্ষে ১০ সংখ্যা)',
+          type: 'error'
+        });
+        setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 3000);
+        setCreatingParent(null);
+        return;
+      }
+      
+      const password = cleanPhone; // Use full phone number as password
+
+      // Use student's email (created during admission) as parent email
+      const parentEmail = studentEmail;
+
+      // Check if parent account already exists by phone number
+      const existingParentByPhoneQuery = query(
+        collection(db, 'users'),
+        where('phoneNumber', '==', parentPhone),
+        where('role', '==', 'parent')
+      );
+      const existingParentByPhoneSnapshot = await getDocs(existingParentByPhoneQuery);
+
+      if (!existingParentByPhoneSnapshot.empty) {
+        // Parent already exists, just link the student
+        const existingParent = existingParentByPhoneSnapshot.docs[0].data();
+        const existingParentUid = existingParentByPhoneSnapshot.docs[0].id;
+        
+        // Check if we need to create/update Firebase Auth account with student email
+        // If existing parent has different email, try to create new Firebase Auth account
+        if (existingParent.email !== parentEmail) {
+          try {
+            // Try to create Firebase Auth account with student email
+            const userCredential = await createUserWithEmailAndPassword(auth, parentEmail, password);
+            const newParentUid = userCredential.user.uid;
+            
+            // Update Firestore to use new UID and student email
+            await setDoc(doc(db, 'users', newParentUid), {
+              uid: newParentUid,
+              name: parentName,
+              displayName: parentName,
+              email: parentEmail,
+              phone: parentPhone,
+              phoneNumber: parentPhone,
+              role: 'parent' as const,
+              schoolId: existingParent.schoolId || schoolSettings?.schoolCode || SCHOOL_ID,
+              schoolName: existingParent.schoolName || schoolSettings?.schoolName || SCHOOL_NAME,
+              isActive: true,
+              isApproved: true,
+              associatedStudents: [
+                ...(existingParent.associatedStudents || []),
+                {
+                  name: student.displayName || student.name || '',
+                  class: student.class || '',
+                  studentId: student.studentId || '',
+                  uid: student.uid
+                }
+              ],
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp()
+            });
+            
+            // Delete old parent document
+            await deleteDoc(doc(db, 'users', existingParentUid));
+            
+            // Sign out the newly created parent user
+            await auth.signOut();
+            
+            // Update student document to link parent
+            const studentRef = doc(db, 'students', student.uid);
+            await setDoc(studentRef, {
+              parentUid: newParentUid,
+              parentEmail: parentEmail,
+              updatedAt: serverTimestamp()
+            }, { merge: true });
+
+            setNotification({
+              show: true,
+              message: `অভিভাবক অ্যাকাউন্ট সফলভাবে আপডেট হয়েছে! ইমেইল: ${parentEmail}, পাসওয়ার্ড: ${password}`,
+              type: 'success'
+            });
+            setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 8000);
+            setCreatingParent(null);
+            return;
+          } catch (emailError: any) {
+            if (emailError.code === 'auth/email-already-in-use') {
+              // Email already exists in Firebase Auth (might be student account)
+              // Just update Firestore and link student
+              setNotification({
+                show: true,
+                message: 'এই ইমেইল ইতিমধ্যে ব্যবহৃত হচ্ছে। দয়া করে অন্য ইমেইল ব্যবহার করুন বা বিদ্যমান অ্যাকাউন্ট দিয়ে লগইন করুন।',
+                type: 'error'
+              });
+              setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 5000);
+              setCreatingParent(null);
+              return;
+            } else {
+              throw emailError;
+            }
+          }
+        }
+        
+        // If email matches, just update and link student
+        await setDoc(doc(db, 'users', existingParentUid), {
+          email: parentEmail, // Use student email
+          associatedStudents: [
+            ...(existingParent.associatedStudents || []),
+            {
+              name: student.displayName || student.name || '',
+              class: student.class || '',
+              studentId: student.studentId || '',
+              uid: student.uid
+            }
+          ],
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+        
+        // Remove duplicate students if any
+        const updatedParentDoc = await getDoc(doc(db, 'users', existingParentUid));
+        if (updatedParentDoc.exists()) {
+          const updatedData = updatedParentDoc.data();
+          const associatedStudents = updatedData.associatedStudents || [];
+          const uniqueStudents = associatedStudents.filter((s: any, index: number, self: any[]) => 
+            index === self.findIndex((t: any) => t.uid === s.uid)
+          );
+          
+          if (uniqueStudents.length !== associatedStudents.length) {
+            await setDoc(doc(db, 'users', existingParentUid), {
+              associatedStudents: uniqueStudents,
+              updatedAt: serverTimestamp()
+            }, { merge: true });
+          }
+        }
+
+        // Update student document to link parent
+        const studentRef = doc(db, 'students', student.uid);
+        await setDoc(studentRef, {
+          parentUid: existingParentUid,
+          parentEmail: parentEmail, // Use student email
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+
+        setNotification({
+          show: true,
+          message: `শিক্ষার্থীকে বিদ্যমান অভিভাবক অ্যাকাউন্টের সাথে সংযুক্ত করা হয়েছে! ইমেইল: ${parentEmail}, পাসওয়ার্ড: ${password}`,
+          type: 'success'
+        });
+        setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 8000);
+        setCreatingParent(null);
+        return;
+      }
+
+      // Check if email already exists in Firebase Auth
+      try {
+        // Validate password before creating account
+        if (!password || password.length < 6) {
+          setNotification({
+            show: true,
+            message: 'পাসওয়ার্ড তৈরি করতে সমস্যা হয়েছে। অভিভাবকের ফোন নম্বর যাচাই করুন।',
+            type: 'error'
+          });
+          setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 3000);
+          setCreatingParent(null);
+          return;
+        }
+        
+        // Create Firebase Auth account (this will automatically sign in the new user)
+        const userCredential = await createUserWithEmailAndPassword(auth, parentEmail, password);
+        const parentUid = userCredential.user.uid;
+
+        // Get school settings
+        const schoolId = schoolSettings?.schoolCode || SCHOOL_ID;
+        const schoolName = schoolSettings?.schoolName || SCHOOL_NAME;
+
+        // Create parent document in Firestore
+        const parentData = {
+          uid: parentUid,
+          name: parentName,
+          displayName: parentName,
+          email: parentEmail,
+          phone: parentPhone,
+          phoneNumber: parentPhone,
+          role: 'parent' as const,
+          schoolId: schoolId,
+          schoolName: schoolName,
+          isActive: true,
+          isApproved: true,
+          associatedStudents: [
+            {
+              name: student.displayName || student.name || '',
+              class: student.class || '',
+              studentId: student.studentId || '',
+              uid: student.uid
+            }
+          ],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        };
+
+        await setDoc(doc(db, 'users', parentUid), parentData);
+
+        // Update student document to link parent
+        const studentRef = doc(db, 'students', student.uid);
+        const studentDoc = await getDoc(studentRef);
+        if (studentDoc.exists()) {
+          await setDoc(studentRef, {
+            parentUid: parentUid,
+            parentEmail: parentEmail,
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+        }
+
+        // Immediately sign out the newly created parent user
+        // This prevents redirect to parent panel and keeps admin logged in
+        await auth.signOut();
+
+        // Show success notification with credentials
+        setNotification({
+          show: true,
+          message: `অভিভাবক অ্যাকাউন্ট সফলভাবে তৈরি হয়েছে! ইমেইল: ${parentEmail}, পাসওয়ার্ড: ${password}`,
+          type: 'success'
+        });
+        setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 8000);
+      } catch (authError: any) {
+        if (authError.code === 'auth/email-already-in-use') {
+          setNotification({
+            show: true,
+            message: 'এই ইমেইল দিয়ে ইতিমধ্যে একটি অ্যাকাউন্ট রয়েছে',
+            type: 'error'
+          });
+        } else {
+          throw authError;
+        }
+      }
+    } catch (error) {
+      console.error('Error creating parent account:', error);
+      setNotification({
+        show: true,
+        message: `অভিভাবক অ্যাকাউন্ট তৈরি করতে সমস্যা হয়েছে: ${error instanceof Error ? error.message : String(error)}`,
+        type: 'error'
+      });
+      setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 5000);
+    } finally {
+      setCreatingParent(null);
+    }
+  };
+
+  // Export functions
+  const handleExportPDF = async () => {
+    try {
+      setIsExporting(true);
+      const exportData = convertStudentsForExport(filteredStudents);
+      const filename = `students_${new Date().toISOString().split('T')[0]}.pdf`;
+      await exportToPDF(exportData, filename, schoolLogo, schoolSettings);
+    } catch (error) {
+      console.error('Error exporting to PDF:', error);
+      setError('PDF export failed');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportExcel = () => {
+    try {
+      setIsExporting(true);
+      const exportData = convertStudentsForExport(filteredStudents);
+      const filename = `students_${new Date().toISOString().split('T')[0]}.xlsx`;
+      exportToExcel(exportData);
+    } catch (error) {
+      console.error('Error exporting to Excel:', error);
+      setError('Excel export failed');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportDOCX = async () => {
+    try {
+      setIsExporting(true);
+      alert('DOCX export feature is currently unavailable');
+    } catch (error) {
+      console.error('Error exporting to DOCX:', error);
+      setError('DOCX export failed');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   // Sort students by roll number within each class
   const sortedStudents = [...students].sort((a, b) => {
     const classA = a.class || '';
@@ -218,11 +695,16 @@ function StudentsPage() {
       student.studentId?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       student.class?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       student.phoneNumber?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      student.fatherName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      student.motherName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       student.guardianName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (student as any).fatherPhone?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (student as any).motherPhone?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       student.guardianPhone?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       student.section?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       student.group?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      student.rollNumber?.toString().includes(searchTerm);
+      (student.rollNumber ? student.rollNumber.toString().toLowerCase() : '').includes(searchTerm.toLowerCase()) ||
+      (student.rollNumber ? formatRollNumber(student.rollNumber.toString()) : '').toLowerCase().includes(searchTerm.toLowerCase());
 
     const classMatch = !searchFilters.class || student.class === searchFilters.class;
     const sectionMatch = !searchFilters.section || student.section === searchFilters.section;
@@ -234,7 +716,8 @@ function StudentsPage() {
       student.displayName?.toLowerCase().includes(searchFilters.name.toLowerCase()) ||
       student.name?.toLowerCase().includes(searchFilters.name.toLowerCase());
     const rollMatch = !searchFilters.rollNumber ||
-      student.rollNumber?.toLowerCase().includes(searchFilters.rollNumber.toLowerCase());
+      (student.rollNumber ? student.rollNumber.toString().toLowerCase() : '').includes(searchFilters.rollNumber.toLowerCase()) ||
+      (student.rollNumber ? formatRollNumber(student.rollNumber.toString()) : '').toLowerCase().includes(searchFilters.rollNumber.toLowerCase());
 
     return searchMatch && classMatch && sectionMatch && statusMatch && groupMatch && nameMatch && rollMatch;
   });
@@ -249,6 +732,11 @@ function StudentsPage() {
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
   const paginatedStudents = filteredStudents.slice(startIndex, endIndex);
+  const selectedCount = selectedStudentIds.length;
+  const isCurrentPageFullySelected = paginatedStudents.length > 0 && paginatedStudents.every(student => selectedStudentIds.includes(student.uid));
+  const selectedStudentsDetails = students.filter(student => selectedStudentIds.includes(student.uid));
+  const previewSelectedStudents = selectedStudentsDetails.slice(0, 5);
+  const hasMoreSelectedStudents = selectedStudentsDetails.length > 5;
 
   // Pagination handlers
   const handlePageChange = (page: number) => {
@@ -290,155 +778,6 @@ function StudentsPage() {
     return pages;
   };
 
-  // Export to PDF function
-  const exportToPDF = async (students: StudentUser[]) => {
-    try {
-      const printWindow = window.open('', '_blank');
-      if (!printWindow) return;
-
-      const currentDate = new Date().toLocaleDateString('bn-BD');
-
-      const htmlContent = `
-        <!DOCTYPE html>
-        <html lang="bn" dir="rtl">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>শিক্ষার্থী তালিকা রিপোর্ট</title>
-            <style>
-                body {
-                    font-family: 'Bangla', 'SolaimanLipi', Arial, sans-serif;
-                    margin: 0;
-                    padding: 10px 8px;
-                    direction: rtl;
-                    text-align: right;
-                }
-                .school-header {
-                    text-align: center;
-                    margin-bottom: 8px;
-                    padding: 8px;
-                    border-bottom: 2px solid #2563eb;
-                }
-                .school-name {
-                    font-size: 26px;
-                    font-weight: bold;
-                    color: #2563eb;
-                    margin-bottom: 6px;
-                }
-                .school-info {
-                    font-size: 14px;
-                    color: #333;
-                    margin-bottom: 3px;
-                }
-                .report-header {
-                    text-align: center;
-                    margin-bottom: 10px;
-                    padding: 8px;
-                }
-                .report-title {
-                    font-size: 24px;
-                    font-weight: bold;
-                    color: #2563eb;
-                    margin-bottom: 15px;
-                }
-                .report-info {
-                    font-size: 16px;
-                    color: #333;
-                    margin-bottom: 5px;
-                }
-                table {
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin: 20px auto;
-                    font-size: 11px;
-                    font-family: 'Bangla', 'SolaimanLipi', Arial, sans-serif;
-                    table-layout: fixed;
-                }
-                th, td {
-                    border: 1px solid #2563eb;
-                    padding: 8px 4px;
-                    text-align: center;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }
-                th {
-                    background-color: #dbeafe;
-                    font-weight: bold;
-                    color: #1e40af;
-                    font-size: 14px;
-                    border-bottom: 2px solid #2563eb;
-                }
-                tr:nth-child(even) {
-                    background-color: #f9f9f9;
-                }
-                @media print {
-                    body { padding: 20px; }
-                    .no-print { display: none; }
-                }
-                @page {
-                    size: A4 landscape;
-                    margin: 0.3in;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="school-header">
-                <div class="school-name">ইকনা স্কুল এন্ড কলেজ</div>
-                <div class="school-info">মিরপুর, ঢাকা, বাংলাদেশ</div>
-                <div class="school-info">ফোন: ০১৭১১১১১১১১ | ইমেইল: info@iqnaschool.edu</div>
-            </div>
-
-            <div class="report-header">
-                <div class="report-title">শিক্ষার্থী তালিকা</div>
-                <div class="report-info">
-                    রিপোর্ট তৈরির তারিখ: ${currentDate} | মোট শিক্ষার্থী: ${students.length} জন
-                </div>
-            </div>
-
-            <table>
-                <thead>
-                    <tr>
-                        <th>ফোন নম্বর</th>
-                        <th>ঠিকানা</th>
-                        <th>বাবার নাম</th>
-                        <th>বিভাগ</th>
-                        <th>ক্লাস</th>
-                        <th>শিক্ষার্থীর নাম</th>
-                        <th>রোল নম্বর</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${students.map((student) => `
-                        <tr>
-                            <td>${student.phoneNumber || student.phone || 'N/A'}</td>
-                            <td>${student.address || 'N/A'}</td>
-                            <td>${student.fatherName || student.guardianName || 'N/A'}</td>
-                            <td>${student.section || 'N/A'}</td>
-                            <td>${student.class || 'N/A'}</td>
-                            <td>${student.displayName || student.name || 'N/A'}</td>
-                            <td>${student.rollNumber || 'N/A'}</td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        </body>
-        </html>
-      `;
-
-      printWindow.document.write(htmlContent);
-      printWindow.document.close();
-
-      printWindow.onload = () => {
-        printWindow.print();
-        printWindow.close();
-      };
-
-    } catch (error) {
-      console.error('PDF export error:', error);
-      alert('PDF এক্সপোর্ট করতে সমস্যা হয়েছে');
-    }
-  };
 
   // Export to DOCX function
   const exportToDOCX = async (students: StudentUser[]) => {
@@ -529,9 +868,9 @@ function StudentsPage() {
         </head>
         <body>
             <div class="school-header">
-                <div class="school-name">ইকনা স্কুল এন্ড কলেজ</div>
-                <div class="school-info">মিরপুর, ঢাকা, বাংলাদেশ</div>
-                <div class="school-info">ফোন: ০১৭১১১১১১১১ | ইমেইল: info@iqnaschool.edu</div>
+                <div class="school-name">ইকরা নূরানী একাডেমি</div>
+                <div class="school-info">Dhaka, Bangladesh</div>
+                <div class="school-info">ফোন: ০১৭১১১১১১১১ | ইমেইল: info@ikranurani.edu</div>
             </div>
 
             <div class="report-header">
@@ -558,11 +897,11 @@ function StudentsPage() {
                         <tr>
                             <td>${student.phoneNumber || student.phone || 'N/A'}</td>
                             <td>${student.address || 'N/A'}</td>
-                            <td>${student.fatherName || student.guardianName || 'N/A'}</td>
+                            <td>${student.fatherName || student.motherName || student.guardianName || 'N/A'}</td>
                             <td>${student.section || 'N/A'}</td>
                             <td>${student.class || 'N/A'}</td>
                             <td>${student.displayName || student.name || 'N/A'}</td>
-                            <td>${student.rollNumber || 'N/A'}</td>
+                            <td>${formatRollNumber(student.rollNumber)}</td>
                         </tr>
                     `).join('')}
                 </tbody>
@@ -602,22 +941,52 @@ function StudentsPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Heart, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
   return (
     <AdminLayout title="শিক্ষার্থী ব্যবস্থাপনা" subtitle="সকল শিক্ষার্থীর তথ্য দেখুন এবং পরিচালনা করুন">
+      {/* Notification */}
+      {notification.show && (
+        <div className={`fixed top-20 right-4 z-50 p-4 rounded-lg shadow-lg max-w-md ${
+          notification.type === 'success' ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
+        }`}>
+          <div className="flex items-start space-x-3">
+            {notification.type === 'success' ? (
+              <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+            ) : (
+              <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+            )}
+            <div className="flex-1">
+              <p className={`text-sm font-medium ${
+                notification.type === 'success' ? 'text-green-800' : 'text-red-800'
+              }`}>
+                {notification.message}
+              </p>
+            </div>
+            <button
+              onClick={() => setNotification({ show: false, message: '', type: 'success' })}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
       {/* Search Bar */}
       <div className="mb-6">
         <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
@@ -685,6 +1054,19 @@ function StudentsPage() {
               </button>
             </div>
             <div className="flex space-x-3">
+              {/* Export Button */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowExportModal(true)}
+                  disabled={isExporting || filteredStudents.length === 0}
+                  className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="এক্সপোর্ট করুন"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>এক্সপোর্ট</span>
+                </button>
+              </div>
+              
               <button
                 onClick={() => router.push('/admin/students/approve')}
                 className="bg-orange-600 text-white px-4 py-2 rounded-lg hover:bg-orange-700 flex items-center space-x-2"
@@ -713,29 +1095,16 @@ function StudentsPage() {
                 <Plus className="w-4 h-4" />
                 <span>নতুন শিক্ষার্থী যোগ করুন</span>
               </button>
+              <button
+                onClick={() => router.push('/admin/students/parent-login')}
+                className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center space-x-2"
+              >
+                <Shield className="w-4 h-4" />
+                <span>অভিভাবক লগিন</span>
+              </button>
             </div>
 
             {/* Export Buttons */}
-            {filteredStudents.length > 0 && (
-              <div className="flex space-x-2">
-                <button
-                  onClick={() => exportToPDF(filteredStudents)}
-                  className="bg-red-600 text-white px-3 py-2 rounded-lg hover:bg-red-700 flex items-center space-x-2 text-sm"
-                  title="PDF এ এক্সপোর্ট করুন"
-                >
-                  <FileText className="w-4 h-4" />
-                  <span>PDF</span>
-                </button>
-                <button
-                  onClick={() => exportToDOCX(filteredStudents)}
-                  className="bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2 text-sm"
-                  title="DOCX এ এক্সপোর্ট করুন"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>DOCX</span>
-                </button>
-              </div>
-            )}
           </div>
         </div>
 
@@ -957,91 +1326,95 @@ function StudentsPage() {
                   </button>
                 </div>
 
-                <div className="border-t border-gray-200 pt-4">
-                  <p className="text-xs text-gray-500 mb-3">দ্রুত টেস্ট করার জন্য:</p>
-                  <button
-                    onClick={async () => {
-                      try {
-                        const sampleStudent = {
-                          uid: `sample_${Date.now()}`,
-                          schoolId: 'IQNA_SCHOOL',
-                          role: 'student' as const,
-                          displayName: 'মোঃ আব্দুল্লাহ আল মামুন',
-                          email: `abdullah.mamun.${Date.now()}@iqnaschool.edu`,
-                          phoneNumber: '01711111111',
-                          studentId: `STD${Date.now()}`,
-                          class: '10',
-                          section: 'A',
-                          group: 'Science',
-                          rollNumber: '01',
-                          fatherName: 'মোঃ আলী হোসেন',
-                          motherName: 'জাহানারা বেগম',
-                          guardianName: 'মোঃ আলী হোসেন',
-                          address: 'রোড নং ৫, হাউস নং ১২৩, মিরপুর, ঢাকা',
-                          city: 'ঢাকা',
-                          district: 'ঢাকা',
-                          postalCode: '1216',
-                          isActive: true,
-                          createdAt: new Date(),
-                          updatedAt: new Date()
-                        };
-
-                        await studentQueries.createStudent(sampleStudent);
-                        alert('স্যাম্পল শিক্ষার্থী যোগ করা হয়েছে!');
-                      } catch (error) {
-                        console.error('Error adding sample student:', error);
-                        alert('স্যাম্পল শিক্ষার্থী যোগ করতে সমস্যা হয়েছে');
-                      }
-                    }}
-                    className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm transition-colors"
-                  >
-                    স্যাম্পল শিক্ষার্থী যোগ করুন
-                  </button>
-                </div>
               </div>
             )}
           </div>
         ) : viewMode === 'grid' ? (
           /* Grid View */
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {paginatedStudents.map((student) => (
-              <div key={student.uid} className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-                <div className="flex items-center space-x-4 mb-4">
-                  <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center overflow-hidden">
-                    {student.profileImage ? (
-                      <img
-                        src={student.profileImage}
-                        alt={student.displayName || student.name || 'Student'}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <span className="text-white font-bold text-lg">
-                        {student.displayName?.split(' ')[0].charAt(0) || student.email?.charAt(0).toUpperCase()}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="text-lg font-semibold text-gray-900">{student.displayName || student.name || 'Unknown Student'}</h3>
-                    <p className="text-sm text-gray-600">ID: {student.studentId || 'N/A'}</p>
-                    <p className="text-sm text-gray-600">{student.class || 'No Class'}</p>
-                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full mt-1 ${
-                      student.isActive
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-red-100 text-red-800'
-                    }`}>
-                      {student.isActive ? 'সক্রিয়' : 'নিষ্ক্রিয়'}
+          <div>
+            {/* Selection Controls */}
+            {paginatedStudents.length > 0 && (
+              <div className="mb-4 flex items-center justify-between bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                <div className="flex items-center space-x-4">
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isCurrentPageFullySelected}
+                      onChange={selectAllCurrentPage}
+                      className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                    />
+                    <span className="text-sm font-medium text-gray-700">
+                      {isCurrentPageFullySelected ? 'সব আনমার্ক করুন' : 'সব মার্ক করুন'} ({paginatedStudents.length} জন)
                     </span>
-                  </div>
+                  </label>
+                  {selectedCount > 0 && (
+                    <span className="text-sm text-blue-600 font-medium">
+                      {selectedCount} জন নির্বাচিত
+                    </span>
+                  )}
                 </div>
+                {selectedCount > 0 && (
+                  <button
+                    onClick={handleOpenBulkDelete}
+                    className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 flex items-center space-x-2"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>নির্বাচিত মুছে ফেলুন ({selectedCount})</span>
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {paginatedStudents.map((student) => (
+                <div key={student.uid} className={`bg-white rounded-xl shadow-sm border p-6 transition-all ${
+                  isStudentSelected(student.uid) ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-100'
+                }`}>
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex items-center space-x-4 flex-1">
+                      <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center overflow-hidden">
+                        {student.profileImage ? (
+                          <img
+                            src={student.profileImage}
+                            alt={student.displayName || student.name || 'Student'}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <span className="text-white font-bold text-lg">
+                            {student.displayName?.split(' ')[0].charAt(0) || student.email?.charAt(0).toUpperCase()}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <h3 className="text-lg font-semibold text-gray-900">{student.displayName || student.name || 'Unknown Student'}</h3>
+                        <p className="text-sm text-gray-600">ID: {student.studentId || 'N/A'}</p>
+                        <p className="text-sm text-gray-600">{student.class || 'No Class'}</p>
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full mt-1 ${
+                          student.isActive
+                            ? 'bg-green-100 text-green-800'
+                            : 'bg-red-100 text-red-800'
+                        }`}>
+                          {student.isActive ? 'সক্রিয়' : 'নিষ্ক্রিয়'}
+                        </span>
+                      </div>
+                    </div>
+                    <label className="flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isStudentSelected(student.uid)}
+                        onChange={() => toggleStudentSelection(student.uid)}
+                        className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                      />
+                    </label>
+                  </div>
 
                 <div className="space-y-2 mb-4">
                   <div className="flex items-center text-sm text-gray-600">
                     <UserCheck className="w-4 h-4 mr-2" />
-                    গার্ডিয়ান: {student.guardianName || 'N/A'}
+                    গার্ডিয়ান: {student.fatherName || student.motherName || student.guardianName || 'N/A'}
                   </div>
                   <div className="flex items-center text-sm text-gray-600">
                     <Phone className="w-4 h-4 mr-2" />
-                    {student.phoneNumber || student.phone || 'N/A'}
+                    {(student as any).fatherPhone || (student as any).motherPhone || student.guardianPhone || 'N/A'}
                   </div>
                   <div className="flex items-center text-sm text-gray-600">
                     <Mail className="w-4 h-4 mr-2" />
@@ -1069,6 +1442,24 @@ function StudentsPage() {
                     <span>সম্পাদনা</span>
                   </button>
                   <button
+                    onClick={() => handleCreateParentAccount(student)}
+                    disabled={creatingParent === student.uid || !student.guardianName && !student.fatherName && !student.motherName}
+                    className="flex-1 bg-purple-50 text-purple-600 px-3 py-2 rounded-lg text-sm hover:bg-purple-100 flex items-center justify-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="অভিভাবক অ্যাকাউন্ট তৈরি করুন"
+                  >
+                    {creatingParent === student.uid ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>তৈরি হচ্ছে...</span>
+                      </>
+                    ) : (
+                      <>
+                        <UserPlus className="w-4 h-4" />
+                        <span>অভিভাবক</span>
+                      </>
+                    )}
+                  </button>
+                  <button
                     onClick={() => handleDeleteClick(student)}
                     className="bg-red-50 text-red-600 px-3 py-2 rounded-lg text-sm hover:bg-red-100"
                   >
@@ -1077,50 +1468,106 @@ function StudentsPage() {
                 </div>
               </div>
             ))}
+            </div>
           </div>
         ) : (
           /* List View */
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ছাত্র</th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Admission No</th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">রোল</th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">শিক্ষার্থীর নাম</th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">গ্রুপ</th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">বাবার নাম</th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ফোন</th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">বর্তমান ঠিকানা</th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ক্রিয়াকলাপ</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {paginatedStudents.map((student) => (
-                    <tr key={student.uid} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center overflow-hidden">
-                            {student.profileImage ? (
-                              <img
-                                src={student.profileImage}
-                                alt={student.displayName || student.name || 'Student'}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <span className="text-white font-bold text-sm">
-                                {student.displayName?.split(' ')[0].charAt(0) || student.email?.charAt(0).toUpperCase()}
-                              </span>
-                            )}
+          <Fragment>
+            {/* Selection Controls */}
+            {paginatedStudents.length > 0 && (
+              <div className="mb-4 flex items-center justify-between bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                <div className="flex items-center space-x-4">
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isCurrentPageFullySelected}
+                      onChange={selectAllCurrentPage}
+                      className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                    />
+                    <span className="text-sm font-medium text-gray-700">
+                      {isCurrentPageFullySelected ? 'সব আনমার্ক করুন' : 'সব মার্ক করুন'} ({paginatedStudents.length} জন)
+                    </span>
+                  </label>
+                  {selectedCount > 0 && (
+                    <span className="text-sm text-blue-600 font-medium">
+                      {selectedCount} জন নির্বাচিত
+                    </span>
+                  )}
+                </div>
+                {selectedCount > 0 && (
+                  <button
+                    onClick={handleOpenBulkDelete}
+                    className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 flex items-center space-x-2"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>নির্বাচিত মুছে ফেলুন ({selectedCount})</span>
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <label className="flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={isCurrentPageFullySelected}
+                            onChange={selectAllCurrentPage}
+                            className="w-4 h-4 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                          />
+                        </label>
+                      </th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ছাত্র</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Admission No</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">রোল</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">শিক্ষার্থীর নাম</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">গ্রুপ</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">বাবার নাম</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ফোন</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">বর্তমান ঠিকানা</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ক্রিয়াকলাপ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {paginatedStudents.map((student) => (
+                      <tr key={student.uid} className={`hover:bg-gray-50 ${
+                        isStudentSelected(student.uid) ? 'bg-blue-50' : ''
+                      }`}>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <label className="flex items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={isStudentSelected(student.uid)}
+                              onChange={() => toggleStudentSelection(student.uid)}
+                              className="w-4 h-4 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                            />
+                          </label>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center">
+                            <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center overflow-hidden">
+                              {student.profileImage ? (
+                                <img
+                                  src={student.profileImage}
+                                  alt={student.displayName || student.name || 'Student'}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <span className="text-white font-bold text-sm">
+                                  {student.displayName?.split(' ')[0].charAt(0) || student.email?.charAt(0).toUpperCase()}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      </td>
+                        </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {student.studentId || 'N/A'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {student.rollNumber || 'N/A'}
+                        {formatRollNumber(student.rollNumber)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-gray-900">{student.displayName || student.name || 'Unknown'}</div>
@@ -1130,7 +1577,7 @@ function StudentsPage() {
                         {student.group || 'N/A'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {student.fatherName || student.guardianName || 'N/A'}
+                        {student.fatherName || student.motherName || student.guardianName || 'N/A'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {student.phoneNumber || student.phone || 'N/A'}
@@ -1158,6 +1605,18 @@ function StudentsPage() {
                             <Edit className="w-4 h-4" />
                           </button>
                           <button
+                            onClick={() => handleCreateParentAccount(student)}
+                            disabled={creatingParent === student.uid || !student.guardianName && !student.fatherName && !student.motherName}
+                            className="text-purple-600 hover:text-purple-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="অভিভাবক অ্যাকাউন্ট তৈরি করুন"
+                          >
+                            {creatingParent === student.uid ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <UserPlus className="w-4 h-4" />
+                            )}
+                          </button>
+                          <button
                             onClick={() => handleDeleteClick(student)}
                             className="text-red-600 hover:text-red-900"
                             title="মুছে ফেলুন"
@@ -1170,8 +1629,9 @@ function StudentsPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
-          </div>
+          </Fragment>
         )}
 
         {/* Pagination Controls */}
@@ -1296,7 +1756,153 @@ function StudentsPage() {
             </div>
           </div>
         )}
+
+        {/* Bulk Delete Confirmation Modal */}
+        {showBulkDeleteModal && (
+          <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+              <div className="p-6">
+                <div className="flex items-center mb-4">
+                  <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mr-4">
+                    <Trash2 className="w-6 h-6 text-red-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900">নির্বাচিত শিক্ষার্থী মুছে ফেলুন</h3>
+                    <p className="text-sm text-gray-600">এটি স্থায়ীভাবে মুছে যাবে</p>
+                  </div>
+                </div>
+
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+                  <div className="flex items-center space-x-3 mb-3">
+                    <AlertCircle className="w-6 h-6 text-red-600" />
+                    <div>
+                      <p className="font-semibold text-red-900">সতর্কতা!</p>
+                      <p className="text-sm text-red-700">
+                        আপনি {selectedCount} জন শিক্ষার্থী মুছে ফেলতে চলেছেন। এই কাজটি স্থায়ী এবং পূর্বাবস্থায় ফেরানো যাবে না।
+                      </p>
+                    </div>
+                  </div>
+                  
+                  {selectedStudentsDetails.length > 0 && (
+                    <div className="mt-3 max-h-40 overflow-y-auto">
+                      <p className="text-xs font-medium text-red-800 mb-2">নির্বাচিত শিক্ষার্থী:</p>
+                      <div className="space-y-1">
+                        {previewSelectedStudents.map((student) => (
+                          <div key={student.uid} className="text-xs text-red-700 bg-white px-2 py-1 rounded">
+                            • {student.displayName || student.name || 'Unknown'} ({student.studentId || 'N/A'})
+                          </div>
+                        ))}
+                        {hasMoreSelectedStudents && (
+                          <div className="text-xs text-red-600 italic">
+                            ... এবং আরও {selectedStudentsDetails.length - 5} জন
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex space-x-3">
+                  <button
+                    onClick={handleCancelBulkDelete}
+                    disabled={isBulkDeleting}
+                    className="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    বাতিল করুন
+                  </button>
+                  <button
+                    onClick={handleConfirmBulkDelete}
+                    disabled={isBulkDeleting}
+                    className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+                  >
+                    {isBulkDeleting ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                        <span>মুছে ফেলছি...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="w-4 h-4" />
+                        <span>মুছে ফেলুন ({selectedCount})</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Export Modal */}
+      {showExportModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 overflow-hidden">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-green-500 to-green-600 p-6 text-white text-center">
+              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
+                <Download className="w-8 h-8 text-white" />
+              </div>
+              <h3 className="text-xl font-bold mb-2">এক্সপোর্ট করুন</h3>
+              <p className="text-white/90 text-sm">
+                শিক্ষার্থীদের তালিকা ডাউনলোড করুন ({filteredStudents.length} জন)
+              </p>
+            </div>
+
+            {/* Content */}
+            <div className="p-6">
+              <div className="space-y-3">
+                <button
+                  onClick={handleExportPDF}
+                  disabled={isExporting}
+                  className="w-full flex items-center justify-center space-x-3 px-4 py-3 bg-red-50 text-red-700 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <FileText className="w-5 h-5" />
+                  <span>PDF ফরম্যাট</span>
+                  {isExporting && <div className="w-4 h-4 border-2 border-red-700 border-t-transparent rounded-full animate-spin"></div>}
+                </button>
+
+                <button
+                  onClick={handleExportExcel}
+                  disabled={isExporting}
+                  className="w-full flex items-center justify-center space-x-3 px-4 py-3 bg-green-50 text-green-700 rounded-lg hover:bg-green-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <FileText className="w-5 h-5" />
+                  <span>Excel ফরম্যাট</span>
+                  {isExporting && <div className="w-4 h-4 border-2 border-green-700 border-t-transparent rounded-full animate-spin"></div>}
+                </button>
+
+                <button
+                  onClick={handleExportDOCX}
+                  disabled={isExporting}
+                  className="w-full flex items-center justify-center space-x-3 px-4 py-3 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <FileText className="w-5 h-5" />
+                  <span>Word ফরম্যাট</span>
+                  {isExporting && <div className="w-4 h-4 border-2 border-blue-700 border-t-transparent rounded-full animate-spin"></div>}
+                </button>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex space-x-3 mt-6">
+                <button
+                  onClick={() => setShowExportModal(false)}
+                  disabled={isExporting}
+                  className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 transition-colors disabled:opacity-50"
+                >
+                  বাতিল
+                </button>
+              </div>
+
+              {/* Info Text */}
+              <p className="text-xs text-gray-500 mt-4 text-center">
+                ফাইলটি আপনার ডাউনলোড ফোল্ডারে সংরক্ষিত হবে
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       </AdminLayout>
     );
   }

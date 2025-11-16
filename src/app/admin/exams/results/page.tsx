@@ -1,13 +1,15 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import AdminLayout from '@/components/AdminLayout';
 import { examResultQueries, studentQueries, classQueries, examQueries, examSubjectQueries, ExamResult } from '@/lib/database-queries';
-import { SCHOOL_ID } from '@/lib/constants';
-import { ArrowLeft, RefreshCw, Calculator, Trophy, Target, Zap } from 'lucide-react';
+import { SCHOOL_ID, SCHOOL_NAME } from '@/lib/constants';
+import { ArrowLeft, RefreshCw, Calculator, Trophy, Target, Zap, Download, FileDown } from 'lucide-react';
+import { exportExamResultsToExcel, exportExamResultsPivotToExcel, exportExamResultsToPDF, exportExamResultsPivotToPDF } from '@/lib/export-utils';
+import { settingsQueries } from '@/lib/database-queries';
 
 
 interface Class {
@@ -46,9 +48,16 @@ function ExamResultsPage() {
   const [allStudents, setAllStudents] = useState<any[]>([]);
   const [sortBy, setSortBy] = useState<'studentId' | 'rank' | 'name'>('rank');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [exporting, setExporting] = useState(false);
+  const [schoolLogo, setSchoolLogo] = useState<string>('');
+  const [schoolSettings, setSchoolSettings] = useState<any>(null);
 
   const router = useRouter();
   const schoolId = SCHOOL_ID;
+  const schoolName = SCHOOL_NAME;
+  
+  // Store all valid student IDs from database for filtering
+  const validStudentIdsRef = useRef<Set<string>>(new Set());
 
   // Convert English numbers to Bengali numerals
   const toBengaliNumerals = (num: number): string => {
@@ -84,15 +93,64 @@ function ExamResultsPage() {
   useEffect(() => {
     if (user) {
       loadAllData();
+      loadSchoolSettings();
     }
   }, [user]);
+
+  // Load school settings
+  const loadSchoolSettings = async () => {
+    try {
+      const settings = await settingsQueries.getSettings();
+      setSchoolSettings(settings);
+      if ((settings as any)?.schoolLogo) {
+        setSchoolLogo((settings as any).schoolLogo);
+      } else if ((settings as any)?.websiteLogo) {
+        setSchoolLogo((settings as any).websiteLogo);
+      }
+    } catch (error) {
+      console.error('Error loading school settings:', error);
+    }
+  };
 
   // Load students when class is selected
   useEffect(() => {
     if (selectedClass) {
       loadAllStudents();
+    } else {
+      // If no class selected, clear students to prevent showing old data
+      setAllStudents([]);
     }
   }, [selectedClass]);
+  
+  // Also load all students from database on mount to validate results
+  useEffect(() => {
+    loadAllStudentsFromDatabase();
+  }, []);
+  
+  // Load all students from database (without class filter) for validation
+  const loadAllStudentsFromDatabase = async () => {
+    try {
+      console.log('📚 Loading all students from database for validation, school:', schoolId);
+      const studentsData = await studentQueries.getStudentsBySchool(schoolId);
+      console.log('📊 All students from database:', studentsData?.length || 0, 'students');
+      
+      if (studentsData && studentsData.length > 0) {
+        // Store all valid student IDs in ref for filtering
+        const allValidStudentIds = new Set(
+          studentsData.map(s => s.studentId || s.uid || (s as any).id).filter(Boolean)
+        );
+        validStudentIdsRef.current = allValidStudentIds;
+        console.log('✅ Valid student IDs for filtering:', allValidStudentIds.size);
+        console.log('📋 Sample valid student IDs:', Array.from(allValidStudentIds).slice(0, 5));
+      } else {
+        validStudentIdsRef.current = new Set();
+        console.log('⚠️ No students found in database');
+      }
+    } catch (error) {
+      console.error('❌ Error loading all students:', error);
+      validStudentIdsRef.current = new Set();
+    }
+  };
 
   // Load all students for the selected class
   const loadAllStudents = async () => {
@@ -110,16 +168,13 @@ function ExamResultsPage() {
         // Normalize text function to handle Unicode and case issues
         const normalizeText = (text: string) => text.trim().normalize('NFC').toLowerCase();
 
-        // Filter students by selected class with robust matching
+        // Filter students by selected class with exact matching
         const classStudents = studentsData.filter(student => {
           const studentClass = normalizeText(student.class || '');
           const selected = normalizeText(selectedClass);
 
-          // More flexible matching - check for partial matches and common variations
-          const matches = studentClass === selected || 
-                         studentClass.includes(selected) || 
-                         selected.includes(studentClass) ||
-                         (selected === 'প্লে' && (studentClass === 'নার্সারি' || studentClass === 'নুরসারি'));
+          // Exact match only
+          const matches = studentClass === selected;
 
           if (matches) {
             console.log('✅ Student matches class:', student.name || student.displayName, 'Class:', student.class);
@@ -129,17 +184,31 @@ function ExamResultsPage() {
           return matches;
         });
 
-        // Also include students from examResults that match the selected class
+        // CRITICAL: Only show students that exist in the database
+        // Don't include students from examResults if they don't exist in the current database
+        // This prevents showing old/deleted students
+        
+        // Get student IDs from database students
+        const validStudentIds = new Set(classStudents.map(s => s.studentId || s.uid || (s as any).id).filter(Boolean));
+        
+        // Only include examResults students if they exist in the database
         const examResultsStudents = examResults
           .filter(result => {
             const resultClass = normalizeText(result.className || '');
             const selected = normalizeText(selectedClass);
             
-            // More flexible matching - check for partial matches and common variations
-            return resultClass === selected || 
-                   resultClass.includes(selected) || 
-                   selected.includes(resultClass) ||
-                   (selected === 'প্লে' && (resultClass === 'নার্সারি' || resultClass === 'নুরসারি'));
+            // Check if class matches
+            const classMatches = resultClass === selected;
+            
+            // CRITICAL: Also check if student exists in database
+            const studentId = result.studentId || '';
+            const studentExists = validStudentIds.has(studentId);
+            
+            if (classMatches && !studentExists) {
+              console.log('⚠️ Filtering out old/deleted student from exam results:', result.studentName, 'ID:', studentId);
+            }
+            
+            return classMatches && studentExists;
           })
           .map(result => ({
             studentId: result.studentId,
@@ -149,10 +218,13 @@ function ExamResultsPage() {
           }));
 
         // Combine both arrays and remove duplicates
+        // Since we're already filtering examResultsStudents to only include valid students,
+        // we can safely combine them
         const allMatchingStudents = [...classStudents, ...examResultsStudents];
-        const uniqueStudents = allMatchingStudents.filter((student, index, self) =>
-          index === self.findIndex(s => s.studentId === student.studentId)
-        );
+        const uniqueStudents = allMatchingStudents.filter((student, index, self) => {
+          const studentId = student.studentId || student.uid || (student as any).id;
+          return index === self.findIndex(s => (s.studentId || s.uid || (s as any).id) === studentId);
+        });
 
         console.log(`✅ Found ${classStudents.length} students in class ${selectedClass}`);
         console.log('📋 Class students:', classStudents.map(s => ({ name: s.name || s.displayName, class: s.class, id: s.studentId })));
@@ -325,8 +397,13 @@ function ExamResultsPage() {
 
   // Calculate grades and GPAs for filtered results
   const calculateGradesAndGPAs = async () => {
-    if (filteredResults.length === 0) {
+    if (!filteredResults || filteredResults.length === 0) {
       alert('কোনো ফলাফল পাওয়া যায়নি গ্রেড ক্যালকুলেশনের জন্য।');
+      return;
+    }
+    
+    if (!selectedExam) {
+      alert('দয়া করে একটি পরীক্ষা নির্বাচন করুন।');
       return;
     }
 
@@ -347,117 +424,113 @@ function ExamResultsPage() {
             subjects: new Map()
           });
         }
-        studentGroups.get(studentKey).subjects.set(result.subject, {
-          obtainedMarks: result.obtainedMarks,
-          totalMarks: result.totalMarks,
-          percentage: result.percentage
-        });
+        // Normalize subject name to prevent duplicates (trim whitespace)
+        const normalizedSubject = (result.subject || '').trim();
+        if (normalizedSubject) {
+          const existingData = studentGroups.get(studentKey).subjects.get(normalizedSubject);
+          // If duplicate exists, keep the first one
+          if (!existingData) {
+            studentGroups.get(studentKey).subjects.set(normalizedSubject, {
+              obtainedMarks: result.obtainedMarks,
+              totalMarks: result.totalMarks,
+              percentage: result.percentage
+            });
+          }
+        }
       });
+
+      // Helper function to calculate grade for individual subject
+      const calculateSubjectGrade = (obtainedMarks: number, totalMarks: number): { grade: string; gpa: number } => {
+        // Check if marks are below pass mark
+        if (!obtainedMarks || obtainedMarks === 0) {
+          return { grade: 'F', gpa: 0.00 };
+        }
+
+        // Special logic for 50 marks (Bangladeshi rules)
+        if (totalMarks === 50) {
+          // 50 marks grade criteria:
+          // 40-50 marks: A+, 5.00 (80-100%)
+          // 35-39 marks: A, 4.00 (70-79%)
+          // 30-34 marks: A-, 3.50 (60-69%)
+          // 25-29 marks: B, 3.00 (50-59%)
+          // 20-24 marks: C, 2.00 (40-49%)
+          // 17-19 marks: D, 1.00 (33-39%)
+          // 0-16 marks: F, 0.00 (0-32%)
+          if (obtainedMarks >= 40) return { grade: 'A+', gpa: 5.00 };
+          if (obtainedMarks >= 35) return { grade: 'A', gpa: 4.00 };
+          if (obtainedMarks >= 30) return { grade: 'A-', gpa: 3.50 };
+          if (obtainedMarks >= 25) return { grade: 'B', gpa: 3.00 };
+          if (obtainedMarks >= 20) return { grade: 'C', gpa: 2.00 };
+          if (obtainedMarks >= 17) return { grade: 'D', gpa: 1.00 };
+          return { grade: 'F', gpa: 0.00 };
+        }
+
+        // For 100 marks and other total marks, use percentage-based grading
+        // Determine pass mark based on total marks
+        let passMark: number;
+        if (totalMarks === 100) {
+          passMark = 33; // 100 marks: pass mark 33
+        } else {
+          // For other total marks, use proportional calculation
+          const passPercentage = 33; // 33% pass mark
+          passMark = Math.ceil((totalMarks * passPercentage) / 100);
+        }
+
+        // If below pass mark, return F
+        if (obtainedMarks < passMark) {
+          return { grade: 'F', gpa: 0.00 };
+        }
+
+        // Calculate percentage and determine grade
+        // Grade Criteria (for 100 marks and others):
+        // 80-100%: A+, 5.00
+        // 70-79%: A, 4.00
+        // 60-69%: A-, 3.50
+        // 50-59%: B, 3.00
+        // 40-49%: C, 2.00
+        // 33-39%: D, 1.00
+        // 0-32%: F, 0.00
+        const percentage = (obtainedMarks / totalMarks) * 100;
+        
+        if (percentage >= 80) return { grade: 'A+', gpa: 5.00 };
+        if (percentage >= 70) return { grade: 'A', gpa: 4.00 };
+        if (percentage >= 60) return { grade: 'A-', gpa: 3.50 };
+        if (percentage >= 50) return { grade: 'B', gpa: 3.00 };
+        if (percentage >= 40) return { grade: 'C', gpa: 2.00 };
+        if (percentage >= 33) return { grade: 'D', gpa: 1.00 };
+        return { grade: 'F', gpa: 0.00 };
+      };
 
       let updatedCount = 0;
 
+      // Update each subject individually with its own grade
       for (const studentData of studentGroups.values()) {
-        const subjects = Array.from(studentData.subjects.values()) as Array<{
-          obtainedMarks: number;
-          totalMarks: number;
-          percentage: number;
-        }>;
-        const subjectMarks = subjects.map(s => s.obtainedMarks);
-
-        // Check if any subject has failing marks based on total marks
-        const hasFailingSubject = subjects.some(subject => {
-          const { obtainedMarks, totalMarks } = subject;
+        for (const [subjectName, subjectData] of studentData.subjects.entries()) {
+          // Calculate individual grade for this subject
+          const { grade, gpa } = calculateSubjectGrade(
+            subjectData.obtainedMarks || 0,
+            subjectData.totalMarks || 100
+          );
           
-          // If marks are blank (0 or undefined), consider as fail
-          if (!obtainedMarks || obtainedMarks === 0) {
-            return true;
-          }
-          
-          // Determine pass mark based on total marks
-          if (totalMarks === 100) {
-            return obtainedMarks < 33; // 100 marks: pass mark 33
-          } else if (totalMarks === 50) {
-            return obtainedMarks < 17; // 50 marks: pass mark 17
-          } else {
-            // For other total marks, use proportional calculation
-            const passPercentage = 33; // 33% pass mark
-            const requiredMarks = Math.ceil((totalMarks * passPercentage) / 100);
-            return obtainedMarks < requiredMarks;
-          }
-        });
+          const percentage = subjectData.totalMarks > 0
+            ? (subjectData.obtainedMarks / subjectData.totalMarks) * 100
+            : 0;
 
-        if (hasFailingSubject) {
-          // Assign F grade and 0.00 GPA
-          const grade = 'F';
-          const gpa = 0.00;
-          const percentage = subjects.reduce((sum, s) => sum + s.percentage, 0) / subjects.length;
+          // Find the result ID for this student, exam, and subject
+          const result = filteredResults.find(r =>
+            r.studentId === studentData.studentId &&
+            r.examName === selectedExam &&
+            (r.subject || '').trim() === subjectName
+          );
 
-          console.log(`❌ Student ${studentData.studentName} failed - Grade: ${grade}, GPA: ${gpa}`);
-
-          // Update all subjects for this student
-          for (const [subject] of studentData.subjects) {
-            // Find the result ID for this student, exam, and subject
-            const result = filteredResults.find(r =>
-              r.studentId === studentData.studentId &&
-              r.examName === selectedExam &&
-              r.subject === subject
-            );
-
-            if (result && result.id) {
-              await examResultQueries.updateExamResult(result.id, {
-                grade,
-                gpa,
-                percentage: Math.round(percentage * 100) / 100
-              });
-              updatedCount++;
-            }
-          }
-        } else {
-          // Calculate grade and GPA based on average percentage
-          const totalPercentage = subjects.reduce((sum, s) => sum + s.percentage, 0) / subjects.length;
-
-          let grade = 'F';
-          let gpa = 0.00;
-
-          if (totalPercentage >= 80) {
-            grade = 'A+';
-            gpa = 5.00;
-          } else if (totalPercentage >= 70) {
-            grade = 'A';
-            gpa = 4.00;
-          } else if (totalPercentage >= 60) {
-            grade = 'A-';
-            gpa = 3.50;
-          } else if (totalPercentage >= 50) {
-            grade = 'B';
-            gpa = 3.00;
-          } else if (totalPercentage >= 40) {
-            grade = 'C';
-            gpa = 2.00;
-          } else if (totalPercentage >= 33) {
-            grade = 'D';
-            gpa = 1.00;
-          }
-
-          console.log(`✅ Student ${studentData.studentName} - Grade: ${grade}, GPA: ${gpa}, Percentage: ${totalPercentage.toFixed(2)}%`);
-
-          // Update all subjects for this student
-          for (const [subject] of studentData.subjects) {
-            // Find the result ID for this student, exam, and subject
-            const result = filteredResults.find(r =>
-              r.studentId === studentData.studentId &&
-              r.examName === selectedExam &&
-              r.subject === subject
-            );
-
-            if (result && result.id) {
-              await examResultQueries.updateExamResult(result.id, {
-                grade,
-                gpa,
-                percentage: Math.round(totalPercentage * 100) / 100
-              });
-              updatedCount++;
-            }
+          if (result && result.id) {
+            await examResultQueries.updateExamResult(result.id, {
+              grade,
+              gpa,
+              percentage: Math.round(percentage * 100) / 100
+            });
+            updatedCount++;
+            console.log(`📝 Updated ${studentData.studentName} - ${subjectName}: ${grade} (${subjectData.obtainedMarks}/${subjectData.totalMarks})`);
           }
         }
       }
@@ -495,14 +568,103 @@ function ExamResultsPage() {
     }
   };
 
+  // Handle Excel download
+  const handleDownloadExcel = async () => {
+    if (!filteredResults || filteredResults.length === 0) {
+      alert('ডাউনলোড করার জন্য কোনো ডাটা নেই।');
+      return;
+    }
+
+    setExporting(true);
+    try {
+      if (selectedExam && selectedClass && pivotTableData.length > 0) {
+        // Use pivot format for class-exam view
+        const filename = `${selectedExam}_${selectedClass}_${new Date().toISOString().split('T')[0]}.xlsx`;
+        exportExamResultsPivotToExcel(pivotTableData, allSubjects, selectedExam, selectedClass, filename);
+      } else {
+        // Use simple format for other views
+        const filename = `${selectedExam || 'all-exams'}_${new Date().toISOString().split('T')[0]}.xlsx`;
+        exportExamResultsToExcel(filteredResults, filename);
+      }
+    } catch (error) {
+      console.error('Error exporting to Excel:', error);
+      alert('Excel ডাউনলোড করতে সমস্যা হয়েছে।');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // Handle PDF download
+  const handleDownloadPDF = async () => {
+    if (!filteredResults || filteredResults.length === 0) {
+      alert('ডাউনলোড করার জন্য কোনো ডাটা নেই।');
+      return;
+    }
+
+    setExporting(true);
+    try {
+      if (selectedExam && selectedClass && pivotTableData.length > 0) {
+        // Use pivot format for class-exam view
+        await exportExamResultsPivotToPDF(pivotTableData, allSubjects, selectedExam, selectedClass, undefined, schoolLogo, schoolSettings);
+      } else {
+        // Use simple format for other views
+        await exportExamResultsToPDF(filteredResults, undefined, schoolLogo, schoolSettings, selectedExam, selectedClass);
+      }
+    } catch (error) {
+      console.error('Error exporting to PDF:', error);
+      alert('PDF ডাউনলোড করতে সমস্যা হয়েছে।');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // Get filtered exam results (real-time)
   const getFilteredResults = (): ExamResult[] => {
+    if (!examResults || !Array.isArray(examResults)) {
+      return [];
+    }
+
     console.log('🔍=== FILTER DEBUG ===');
     console.log('📋 Total results:', examResults.length);
     console.log('🏫 Selected class:', selectedClass);
     console.log('📝 Selected exam:', selectedExam);
 
     let filtered = examResults;
+
+    // CRITICAL: First filter out results for students that don't exist in database
+    // Get valid student IDs from allStudents (which only contains students from database)
+    // Also use global valid student IDs from database
+    const validStudentIdsFromAllStudents = new Set(
+      allStudents.map(s => s.studentId || s.uid || (s as any).id).filter(Boolean)
+    );
+    
+    // Get global valid student IDs from database (loaded on mount)
+    const globalValidStudentIds = validStudentIdsRef.current;
+    
+    // Combine both sets - use global if allStudents is empty
+    const validStudentIds = validStudentIdsFromAllStudents.size > 0 
+      ? validStudentIdsFromAllStudents 
+      : globalValidStudentIds;
+    
+    // ALWAYS filter by valid students if we have any valid IDs
+    if (validStudentIds.size > 0) {
+      const beforeStudentFilter = filtered.length;
+      filtered = filtered.filter(result => {
+        const studentId = result.studentId || '';
+        const studentExists = validStudentIds.has(studentId);
+        
+        if (!studentExists) {
+          console.log('⚠️ Filtering out result for deleted student:', result.studentName, 'ID:', studentId);
+        }
+        
+        return studentExists;
+      });
+      console.log(`📋 After student validation filter: ${beforeStudentFilter} → ${filtered.length}`);
+      console.log(`📋 Valid student IDs count: ${validStudentIds.size}`);
+      console.log(`📋 Sample valid IDs:`, Array.from(validStudentIds).slice(0, 5));
+    } else {
+      console.log('⚠️ No valid student IDs found - cannot filter results. This may show old/deleted students.');
+    }
 
     // Filter by class
     if (selectedClass) {
@@ -514,15 +676,12 @@ function ExamResultsPage() {
         const resultClass = normalizeText(result.className || '');
         const selectedClassTrimmed = normalizeText(selectedClass);
 
-        // More flexible matching - check for partial matches and common variations
-        const matches = resultClass === selectedClassTrimmed || 
-                       resultClass.includes(selectedClassTrimmed) || 
-                       selectedClassTrimmed.includes(resultClass) ||
-                       (selectedClassTrimmed === 'প্লে' && (resultClass === 'নার্সারি' || resultClass === 'নুরসারি'));
+        // Exact match only - no flexible matching
+        const matches = resultClass === selectedClassTrimmed;
 
         console.log(`🔍 Class filter: "${resultClass}" matches "${selectedClassTrimmed}" ? ${matches}`);
-        console.log(`   Result class (length: ${resultClass.length}):`, resultClass);
-        console.log(`   Selected class (length: ${selectedClassTrimmed.length}):`, selectedClassTrimmed);
+        console.log(`   Result class:`, result.className);
+        console.log(`   Selected class:`, selectedClass);
 
         return matches;
       });
@@ -539,11 +698,17 @@ function ExamResultsPage() {
         const resultExam = normalizeText(result.examName || '');
         const selectedExamTrimmed = normalizeText(selectedExam);
 
-        const matches = resultExam === selectedExamTrimmed;
+        // More flexible matching - check for exact match, partial matches, and common variations
+        const matches = resultExam === selectedExamTrimmed || 
+                       resultExam.includes(selectedExamTrimmed) || 
+                       selectedExamTrimmed.includes(resultExam);
 
-        console.log(`🔍 Exam filter: "${resultExam}" === "${selectedExamTrimmed}" ? ${matches}`);
+        console.log(`🔍 Exam filter: "${resultExam}" matches "${selectedExamTrimmed}" ? ${matches}`);
         console.log(`   Result exam (length: ${resultExam.length}):`, resultExam);
         console.log(`   Selected exam (length: ${selectedExamTrimmed.length}):`, selectedExamTrimmed);
+        if (!matches) {
+          console.log(`   ❌ No match - Exam names don't match`);
+        }
 
         return matches;
       });
@@ -557,25 +722,51 @@ function ExamResultsPage() {
   // Real-time filtered results - updates immediately when filters change
   const filteredResults = useMemo(() => {
     return getFilteredResults();
-  }, [examResults, selectedClass, selectedExam]);
+  }, [examResults, selectedClass, selectedExam, allStudents]);
 
   // Get all unique subjects for pivot table columns
+  // IMPORTANT: Only use newly configured exam subjects, NOT old subjects from results
   const allSubjects = useMemo(() => {
     if (!selectedExam) return [];
 
-    // Use exam subjects data if available, otherwise fall back to subjects from results
+    // ONLY use exam subjects that were newly configured
+    // Do NOT fall back to old subjects from exam results
     if (examSubjects.length > 0) {
-      return examSubjects.map(subject => subject.subjectName).sort();
-    } else if (filteredResults.length > 0) {
-      return [...new Set(filteredResults.map(r => r.subject))].sort();
+      const subjects = examSubjects
+        .map(subject => subject.subjectName)
+        .filter(s => s && s.trim() !== '')
+        .map(s => s.trim());
+
+      // Remove duplicates by creating a Map with normalized subject names
+      const subjectMap = new Map<string, string>();
+      subjects.forEach(subject => {
+        const normalized = subject.trim();
+        if (normalized && !subjectMap.has(normalized)) {
+          subjectMap.set(normalized, normalized);
+        }
+      });
+
+      // Convert to array, sort, and return
+      const uniqueSubjects = Array.from(subjectMap.values()).sort();
+      return uniqueSubjects;
     }
 
+    // If no exam subjects configured yet, return empty array
+    // Don't show old subjects from results
     return [];
-  }, [filteredResults, selectedExam, examSubjects]);
+  }, [selectedExam, examSubjects]);
 
   // Create pivot table data when exam is selected
   const pivotTableData = useMemo(() => {
     if (!selectedExam || !selectedClass) {
+      return [];
+    }
+
+    if (!filteredResults || !Array.isArray(filteredResults)) {
+      return [];
+    }
+
+    if (!allStudents || !Array.isArray(allStudents)) {
       return [];
     }
 
@@ -592,17 +783,115 @@ function ExamResultsPage() {
       });
     });
 
+    // Helper function to calculate GPA from percentage
+    // Grade Criteria:
+    // 80-100%: A+, 5.00
+    // 70-79%: A, 4.00
+    // 60-69%: A-, 3.50
+    // 50-59%: B, 3.00
+    // 40-49%: C, 2.00
+    // 33-39%: D, 1.00
+    // 0-32%: F, 0.00
+    const calculateGPAFromPercentage = (percentage: number): number => {
+      if (percentage >= 80) return 5.00;
+      if (percentage >= 70) return 4.00;
+      if (percentage >= 60) return 3.50;
+      if (percentage >= 50) return 3.00;
+      if (percentage >= 40) return 2.00;
+      if (percentage >= 33) return 1.00;
+      return 0.00;
+    };
+
+    // Helper function to calculate grade for individual subject
+    const calculateSubjectGrade = (obtainedMarks: number, totalMarks: number): string => {
+      // Check if marks are below pass mark
+      if (!obtainedMarks || obtainedMarks === 0) {
+        return 'F';
+      }
+
+      // Special logic for 50 marks (Bangladeshi rules)
+      if (totalMarks === 50) {
+        // 50 marks grade criteria:
+        // 40-50 marks: A+, 5.00 (80-100%)
+        // 35-39 marks: A, 4.00 (70-79%)
+        // 30-34 marks: A-, 3.50 (60-69%)
+        // 25-29 marks: B, 3.00 (50-59%)
+        // 20-24 marks: C, 2.00 (40-49%)
+        // 17-19 marks: D, 1.00 (33-39%)
+        // 0-16 marks: F, 0.00 (0-32%)
+        if (obtainedMarks >= 40) return 'A+';
+        if (obtainedMarks >= 35) return 'A';
+        if (obtainedMarks >= 30) return 'A-';
+        if (obtainedMarks >= 25) return 'B';
+        if (obtainedMarks >= 20) return 'C';
+        if (obtainedMarks >= 17) return 'D';
+        return 'F';
+      }
+
+      // For 100 marks and other total marks, use percentage-based grading
+      // Determine pass mark based on total marks
+      let passMark: number;
+      if (totalMarks === 100) {
+        passMark = 33; // 100 marks: pass mark 33
+      } else {
+        // For other total marks, use proportional calculation
+        const passPercentage = 33; // 33% pass mark
+        passMark = Math.ceil((totalMarks * passPercentage) / 100);
+      }
+
+      // If below pass mark, return F
+      if (obtainedMarks < passMark) {
+        return 'F';
+      }
+
+      // Calculate percentage and determine grade
+      // Grade Criteria (for 100 marks and others):
+      // 80-100%: A+, 5.00
+      // 70-79%: A, 4.00
+      // 60-69%: A-, 3.50
+      // 50-59%: B, 3.00
+      // 40-49%: C, 2.00
+      // 33-39%: D, 1.00
+      // 0-32%: F, 0.00
+      const percentage = (obtainedMarks / totalMarks) * 100;
+      
+      if (percentage >= 80) return 'A+';
+      if (percentage >= 70) return 'A';
+      if (percentage >= 60) return 'A-';
+      if (percentage >= 50) return 'B';
+      if (percentage >= 40) return 'C';
+      if (percentage >= 33) return 'D';
+      return 'F';
+    };
+
     // Add exam results for students who have them
     filteredResults.forEach(result => {
       const studentKey = result.studentId;
       if (studentGroups.has(studentKey)) {
-        studentGroups.get(studentKey).subjects.set(result.subject, {
-          obtainedMarks: result.obtainedMarks,
-          totalMarks: result.totalMarks,
-          percentage: result.percentage,
-          grade: result.grade || 'N/A',
-          gpa: result.gpa || 0
-        });
+        // Normalize subject name to prevent duplicates (trim whitespace)
+        const normalizedSubject = (result.subject || '').trim();
+        if (normalizedSubject) {
+          const existingData = studentGroups.get(studentKey).subjects.get(normalizedSubject);
+          // If duplicate exists, keep the first one (or you could merge/average them)
+          if (!existingData) {
+            // Calculate grade for this individual subject
+            const obtainedMarks = result.obtainedMarks || 0;
+            const totalMarks = result.totalMarks || result.fullMarks || 100;
+            const calculatedGrade = calculateSubjectGrade(obtainedMarks, totalMarks);
+            
+            // Calculate percentage and GPA from percentage
+            const percentage = totalMarks > 0 ? (obtainedMarks / totalMarks) * 100 : 0;
+            const calculatedGPA = calculateGPAFromPercentage(percentage);
+            
+            studentGroups.get(studentKey).subjects.set(normalizedSubject, {
+              obtainedMarks: obtainedMarks,
+              totalMarks: totalMarks,
+              percentage: result.percentage || percentage,
+              grade: calculatedGrade, // Use calculated grade instead of stored grade
+              gpa: calculatedGPA // Calculate GPA from percentage instead of using stored GPA
+            });
+          }
+        }
       }
     });
 
@@ -611,8 +900,8 @@ function ExamResultsPage() {
       const subjects = Array.from(student.subjects.values());
       
       // Get all expected subjects for this exam
-      const expectedSubjects = allSubjects.length > 0 ? allSubjects : 
-        Array.from(new Set(filteredResults.map(r => r.subject)));
+      // ONLY use allSubjects (newly configured exam subjects), not old subjects from results
+      const expectedSubjects = allSubjects;
       
       // Check if student has results for all expected subjects
       const hasAllSubjects = expectedSubjects.every(subjectName => 
@@ -778,8 +1067,10 @@ function ExamResultsPage() {
 
         {/* Filters */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">ফিল্টার</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-semibold text-gray-900">ফিল্টার</h3>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 ক্লাস নির্বাচন করুন
@@ -796,12 +1087,12 @@ function ExamResultsPage() {
                   });
                   setSelectedClass(value);
                 }}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors bg-white"
               >
                 <option value="">সকল ক্লাস</option>
                 {classes.length > 0 ? (
-                  classes.map((cls) => (
-                    <option key={cls.id} value={cls.className}>
+                  classes.map((cls, idx) => (
+                    <option key={cls.id || `class-${cls.className}-${idx}`} value={cls.className}>
                       {cls.className} {cls.section !== 'A' ? `(সেকশন ${cls.section})` : ''}
                     </option>
                   ))
@@ -842,12 +1133,12 @@ function ExamResultsPage() {
                     setExamSubjects([]);
                   }
                 }}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors bg-white"
               >
                 <option value="">সকল পরীক্ষা</option>
                 {exams.length > 0 ? (
-                  exams.map((exam) => (
-                    <option key={exam.id} value={exam.name}>
+                  exams.map((exam, idx) => (
+                    <option key={exam.id || `exam-${exam.name}-${idx}`} value={exam.name}>
                       {exam.name}
                     </option>
                   ))
@@ -862,57 +1153,73 @@ function ExamResultsPage() {
               )}
             </div>
 
-            {/* Student Search Filters - Separate Section */}
+            {/* Student Search - Modern Style */}
             {(selectedClass || selectedExam) && (
-              <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-                <h4 className="text-sm font-medium text-gray-700 mb-3">শিক্ষার্থী অনুসন্ধান</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      শিক্ষার্থীর নাম দিয়ে অনুসন্ধান (ঐচ্ছিক)
-                    </label>
-                    <input
-                      type="text"
-                      value={searchStudentName}
-                      onChange={(e) => setSearchStudentName(e.target.value)}
-                      placeholder="শিক্ষার্থীর নাম লিখুন..."
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    />
+              <div className="mt-6 pt-6 border-t border-gray-200">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="flex-1">
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={searchStudentName}
+                        onChange={(e) => setSearchStudentName(e.target.value)}
+                        placeholder="শিক্ষার্থীর নাম দিয়ে অনুসন্ধান করুন..."
+                        className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors bg-white"
+                      />
+                      <Zap className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      রোল নম্বর দিয়ে অনুসন্ধান (ঐচ্ছিক)
-                    </label>
-                    <input
-                      type="text"
-                      value={searchRollNumber}
-                      onChange={(e) => setSearchRollNumber(e.target.value)}
-                      placeholder="রোল নম্বর লিখুন..."
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    />
+                  <div className="flex-1">
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={searchRollNumber}
+                        onChange={(e) => setSearchRollNumber(e.target.value)}
+                        placeholder="রোল নম্বর দিয়ে অনুসন্ধান করুন..."
+                        className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors bg-white"
+                      />
+                      <Target className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    </div>
                   </div>
+                  {(searchStudentName || searchRollNumber) && (
+                    <button
+                      onClick={() => {
+                        setSearchStudentName('');
+                        setSearchRollNumber('');
+                      }}
+                      className="px-4 py-2.5 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                    >
+                      পরিষ্কার
+                    </button>
+                  )}
                 </div>
               </div>
             )}
 
             {/* Filter Action Buttons */}
-            <div className="mt-4 flex gap-2 justify-start">
+            <div className="mt-6 pt-6 border-t border-gray-200 flex flex-wrap gap-3">
               {/* Refresh Button */}
               <button
                 onClick={async () => {
-                  setDataLoading(true);
-                  await loadAllData();
-                  setDataLoading(false);
+                  try {
+                    setDataLoading(true);
+                    await loadAllData();
+                  } catch (error) {
+                    console.error('Error refreshing data:', error);
+                    alert('ডেটা রিফ্রেশ করতে সমস্যা হয়েছে।');
+                  } finally {
+                    setDataLoading(false);
+                  }
                 }}
                 disabled={dataLoading}
-                className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                className="bg-white hover:bg-gray-50 disabled:bg-gray-100 disabled:cursor-not-allowed text-gray-700 border border-gray-300 hover:border-gray-400 px-3 py-1.5 rounded-lg text-sm font-normal transition-colors flex items-center gap-2"
               >
-                <RefreshCw className={`w-4 h-4 ${dataLoading ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 ${dataLoading ? 'animate-spin' : ''}`} />
                 {dataLoading ? 'লোড হচ্ছে...' : 'রিফ্রেশ করুন'}
               </button>
 
               {/* Clear Filters Button */}
-              {(selectedClass || selectedExam) && (
+              {(selectedClass || selectedExam || searchStudentName || searchRollNumber) && (
                 <button
                   onClick={() => {
                     setSelectedClass('');
@@ -921,20 +1228,27 @@ function ExamResultsPage() {
                     setSearchStudentName('');
                     setSearchRollNumber('');
                   }}
-                  className="bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                  className="bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 hover:border-gray-400 px-3 py-1.5 rounded-lg text-sm font-normal transition-colors"
                 >
                   সব ফিল্টার পরিষ্কার করুন
                 </button>
               )}
 
               {/* Calculate Grades and GPAs Button */}
-              {selectedExam && filteredResults.length > 0 && (
+              {selectedExam && filteredResults && filteredResults.length > 0 && (
                 <button
-                  onClick={calculateGradesAndGPAs}
+                  onClick={() => {
+                    try {
+                      calculateGradesAndGPAs();
+                    } catch (error) {
+                      console.error('Error in calculate button:', error);
+                      alert('ফলাফল ক্যালকুলেট করতে সমস্যা হয়েছে।');
+                    }
+                  }}
                   disabled={calculating}
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                  className="bg-white hover:bg-gray-50 disabled:bg-gray-100 disabled:cursor-not-allowed text-gray-700 border border-gray-300 hover:border-gray-400 px-3 py-1.5 rounded-lg text-sm font-normal transition-colors flex items-center gap-2"
                 >
-                  <Calculator className={`w-4 h-4 ${calculating ? 'animate-pulse' : ''}`} />
+                  <Calculator className={`w-3.5 h-3.5 ${calculating ? 'animate-pulse' : ''}`} />
                   {calculating ? 'ক্যালকুলেট হচ্ছে...' : 'ফলাফল ক্যালকুলেট করুন'}
                 </button>
               )}
@@ -977,9 +1291,49 @@ function ExamResultsPage() {
         {/* Results Table */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-200">
-            <h3 className="text-lg font-semibold text-gray-900">
-              {selectedExam ? `${selectedExam} - ফলাফল` : 'ফলাফল তালিকা'}
-            </h3>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-lg font-semibold text-gray-900">
+                {selectedExam ? `${selectedExam} - ফলাফল` : 'ফলাফল তালিকা'}
+              </h3>
+              {filteredResults.length > 0 && (
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={handleDownloadPDF}
+                    disabled={exporting}
+                    className="flex items-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {exporting ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>ডাউনলোড হচ্ছে...</span>
+                      </>
+                    ) : (
+                      <>
+                        <FileDown className="w-4 h-4" />
+                        <span>PDF</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={handleDownloadExcel}
+                    disabled={exporting}
+                    className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {exporting ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>ডাউনলোড হচ্ছে...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-4 h-4" />
+                        <span>Excel</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
             <div className="flex items-center justify-between mt-1">
               <p className="text-sm text-gray-600">
                 {selectedExam
@@ -1007,11 +1361,66 @@ function ExamResultsPage() {
               </p>
               <div className="mt-4 text-xs text-gray-500">
                 উপলব্ধ ক্লাস: {[...new Set(examResults.map(r => r.className))].join(', ')}<br/>
-                উপলব্ধ পরীক্ষা: {[...new Set(examResults.map(r => r.examName))].join(', ')}
+                উপলব্ধ পরীক্ষা: {[...new Set(examResults.map(r => r.examName))].join(', ')}<br/>
+                <div className="mt-2 text-xs text-blue-600">
+                  🔍 ডিবাগ: নির্বাচিত পরীক্ষা = "{selectedExam}" | মোট ফলাফল = {examResults.length}
+                </div>
               </div>
             </div>
+          ) : selectedExam && !selectedClass && filteredResults.length > 0 ? (
+            /* Simple Results View - Only Exam Selected */
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">স্টুডেন্ট আইডি</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">নাম</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ক্লাস</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">বিষয়</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">প্রাপ্ত নম্বর</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">মোট নম্বর</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">শতাংশ</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">গ্রেড</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">অবস্থা</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {filteredResults.map((result, index) => (
+                    <tr key={`filtered-result-${result.id || `${result.studentId}-${result.subject}-${result.examName}`}-${result.studentName}-${index}`} className="hover:bg-gray-50">
+                      <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{result.studentId}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{result.studentName}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{result.className}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{result.subject}</td>
+                      <td className="px-4 py-4 whitespace-nowrap text-center text-sm text-gray-900">{result.obtainedMarks}</td>
+                      <td className="px-4 py-4 whitespace-nowrap text-center text-sm text-gray-900">{result.totalMarks}</td>
+                      <td className="px-4 py-4 whitespace-nowrap text-center text-sm text-gray-900">{result.percentage}%</td>
+                      <td className="px-4 py-4 whitespace-nowrap text-center">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                          result.grade === 'A+' || result.grade === 'A' ? 'bg-green-100 text-green-800' :
+                          result.grade === 'B' ? 'bg-blue-100 text-blue-800' :
+                          result.grade === 'C' ? 'bg-yellow-100 text-yellow-800' :
+                          result.grade === 'D' ? 'bg-orange-100 text-orange-800' :
+                          'bg-red-100 text-red-800'
+                        }`}>
+                          {result.grade || 'N/A'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-center">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                          result.percentage >= 40
+                            ? 'bg-green-100 text-green-800'
+                            : 'bg-red-100 text-red-800'
+                        }`}>
+                          {result.percentage >= 40 ? 'পাস' : 'ফেল'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           ) : selectedExam && selectedClass ? (
-            /* Results View */
+            /* Results View - Both Exam and Class Selected */
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
@@ -1043,8 +1452,8 @@ function ExamResultsPage() {
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       ক্লাস
                     </th>
-                    {allSubjects.map((subject) => (
-                      <th key={subject} className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    {allSubjects.map((subject, idx) => (
+                      <th key={`subject-header-${idx}-${subject || 'unknown'}`} className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
                         {subject}
                       </th>
                     ))}
@@ -1099,10 +1508,10 @@ function ExamResultsPage() {
                         </td>
                         
                         {/* Subject Columns */}
-                        {allSubjects.map((subject) => {
+                        {allSubjects.map((subject, subjIdx) => {
                           const subjectData = subjects.get(subject);
                           return (
-                            <td key={subject} className="px-4 py-4 whitespace-nowrap text-center text-sm">
+                            <td key={`subject-${index}-${subjIdx}-${subject || 'unknown'}`} className="px-4 py-4 whitespace-nowrap text-center text-sm">
                               {subjectData && subjectData.obtainedMarks > 0 ? (
                                 <div className="text-gray-900">
                                   <div className="font-medium">{toBengaliNumerals(subjectData.obtainedMarks)}</div>

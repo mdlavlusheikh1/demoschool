@@ -2,7 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import Navigation from '@/components/Navigation';
-import { Camera, Search, Filter, Grid, List, Download, Eye, Calendar, User, MapPin, Heart, Share2, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { Camera, Search, Filter, Grid, List, Download, Eye, Calendar, User, MapPin, Heart, Share2, ChevronLeft, ChevronRight, X, Video } from 'lucide-react';
+import { settingsQueries, SystemSettings } from '@/lib/database-queries';
+import { transformImageUrl, getProxyUrl } from '@/lib/imagekit-utils';
+import { db } from '@/lib/firebase';
+import { doc, onSnapshot, updateDoc } from 'firebase/firestore';
 
 interface GalleryItem {
   id: string;
@@ -15,8 +19,10 @@ interface GalleryItem {
   photographer: string;
   location: string;
   tags: string[];
-  likes: number;
-  isLiked: boolean;
+  type?: 'image' | 'video';
+  uploadedBy?: string;
+  likes?: number;
+  isLiked?: boolean;
 }
 
 const PublicGalleryPage = () => {
@@ -31,122 +37,93 @@ const PublicGalleryPage = () => {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [selectedImage, setSelectedImage] = useState<GalleryItem | null>(null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
-
-  // Sample data
-  const sampleGalleryItems: GalleryItem[] = [
-    {
-      id: '1',
-      title: 'বার্ষিক ক্রীড়া প্রতিযোগিতা ২০২৪',
-      description: 'স্কুলের বার্ষিক ক্রীড়া প্রতিযোগিতার স্মরণীয় মুহূর্তগুলো',
-      imageUrl: 'https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?w=800&h=600&fit=crop',
-      category: 'events',
-      event: 'বার্ষিক ক্রীড়া প্রতিযোগিতা',
-      date: '2024-12-15',
-      photographer: 'মোহাম্মদ আলী',
-      location: 'স্কুল মাঠ',
-      tags: ['ক্রীড়া', 'প্রতিযোগিতা', 'ছাত্রছাত্রী', 'মাঠ'],
-      likes: 45,
-      isLiked: false
-    },
-    {
-      id: '2',
-      title: 'বিজ্ঞান মেলা ২০২৪',
-      description: 'ছাত্রছাত্রীদের বিজ্ঞান প্রকল্প প্রদর্শনী',
-      imageUrl: 'https://images.unsplash.com/photo-1532094349884-543bc11b234d?w=800&h=600&fit=crop',
-      category: 'academic',
-      event: 'বিজ্ঞান মেলা',
-      date: '2024-12-10',
-      photographer: 'ফাতেমা খাতুন',
-      location: 'স্কুল হল',
-      tags: ['বিজ্ঞান', 'প্রকল্প', 'প্রদর্শনী', 'শিক্ষা'],
-      likes: 32,
-      isLiked: true
-    },
-    {
-      id: '3',
-      title: 'ইসলামিক সাংস্কৃতিক অনুষ্ঠান',
-      description: 'ইসলামিক মূল্যবোধের উপর ভিত্তি করে সাংস্কৃতিক অনুষ্ঠান',
-      imageUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=800&h=600&fit=crop',
-      category: 'cultural',
-      event: 'ইসলামিক সাংস্কৃতিক অনুষ্ঠান',
-      date: '2024-12-05',
-      photographer: 'আব্দুল রহমান',
-      location: 'স্কুল মিলনায়তন',
-      tags: ['ইসলামিক', 'সংস্কৃতি', 'অনুষ্ঠান', 'ধর্ম'],
-      likes: 67,
-      isLiked: false
-    },
-    {
-      id: '4',
-      title: 'শিক্ষক দিবস উদযাপন',
-      description: 'শিক্ষকদের প্রতি শ্রদ্ধা জানিয়ে বিশেষ অনুষ্ঠান',
-      imageUrl: 'https://images.unsplash.com/photo-1522202176988-66273c2fd55f?w=800&h=600&fit=crop',
-      category: 'events',
-      event: 'শিক্ষক দিবস',
-      date: '2024-11-30',
-      photographer: 'নাসির উদ্দিন',
-      location: 'স্কুল হল',
-      tags: ['শিক্ষক', 'শ্রদ্ধা', 'অনুষ্ঠান', 'শিক্ষা'],
-      likes: 89,
-      isLiked: true
-    },
-    {
-      id: '5',
-      title: 'বইমেলা ২০২৪',
-      description: 'ছাত্রছাত্রীদের বই পড়ার আগ্রহ বাড়াতে বইমেলা',
-      imageUrl: 'https://images.unsplash.com/photo-1481627834876-b7833e8f5570?w=800&h=600&fit=crop',
-      category: 'academic',
-      event: 'বইমেলা',
-      date: '2024-11-25',
-      photographer: 'রহিম উদ্দিন',
-      location: 'স্কুল লাইব্রেরি',
-      tags: ['বই', 'পড়া', 'শিক্ষা', 'লাইব্রেরি'],
-      likes: 54,
-      isLiked: false
-    },
-    {
-      id: '6',
-      title: 'বৃক্ষরোপণ কর্মসূচি',
-      description: 'পরিবেশ সুরক্ষায় বৃক্ষরোপণ কর্মসূচি',
-      imageUrl: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=800&h=600&fit=crop',
-      category: 'environment',
-      event: 'বৃক্ষরোপণ কর্মসূচি',
-      date: '2024-11-20',
-      photographer: 'মোহাম্মদ হাসান',
-      location: 'স্কুল প্রাঙ্গণ',
-      tags: ['বৃক্ষ', 'পরিবেশ', 'সুরক্ষা', 'প্রকৃতি'],
-      likes: 41,
-      isLiked: false
-    }
-  ];
-
-  const categories = ['সকল বিভাগ', 'events', 'academic', 'cultural', 'environment', 'sports'];
-  const events = ['সকল অনুষ্ঠান', 'বার্ষিক ক্রীড়া প্রতিযোগিতা', 'বিজ্ঞান মেলা', 'ইসলামিক সাংস্কৃতিক অনুষ্ঠান', 'শিক্ষক দিবস', 'বইমেলা', 'বৃক্ষরোপণ কর্মসূচি'];
+  const [pageTitle, setPageTitle] = useState('ফটো গ্যালারি');
+  const [pageSubtitle, setPageSubtitle] = useState('আমাদের স্কুলের স্মরণীয় মুহূর্তগুলো এবং বিশেষ অনুষ্ঠানগুলোর ছবি দেখুন');
+  const [categories, setCategories] = useState<string[]>(['সকল বিভাগ']);
+  const [events, setEvents] = useState<string[]>(['সকল অনুষ্ঠান']);
+  const [generalSettings, setGeneralSettings] = useState<SystemSettings | null>(null);
 
   useEffect(() => {
-    try {
-      const loadGalleryItems = async () => {
-        try {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          const data = sampleGalleryItems || [];
-          setGalleryItems(data);
-          setFilteredItems(data);
-          setLoading(false);
-        } catch (error) {
-          console.error('Error in loadGalleryItems:', error);
+    setLoading(true);
+    
+    // Real-time listener for gallery settings
+    const settingsRef = doc(db, 'system', 'settings');
+    const unsubscribe = onSnapshot(settingsRef, (docSnap) => {
+      try {
+        if (!docSnap.exists()) {
+          console.warn('No settings found');
           setGalleryItems([]);
           setFilteredItems([]);
           setLoading(false);
+          return;
         }
-      };
-      
-      loadGalleryItems();
-    } catch (error) {
-      console.error('Error in useEffect:', error);
-      setGalleryItems([]);
-      setFilteredItems([]);
+
+        const settings = { id: docSnap.id, ...docSnap.data() } as SystemSettings;
+
+        // Check if gallery page is enabled
+        if (settings.galleryPageEnabled === false) {
+          setGalleryItems([]);
+          setFilteredItems([]);
+          setLoading(false);
+          return;
+        }
+
+        // Set page title and subtitle
+        if (settings.galleryPageTitle) {
+          setPageTitle(settings.galleryPageTitle);
+        }
+        if (settings.galleryPageSubtitle) {
+          setPageSubtitle(settings.galleryPageSubtitle);
+        }
+
+        // Set categories and events
+        if (settings.galleryCategories && settings.galleryCategories.length > 0) {
+          setCategories(settings.galleryCategories);
+        }
+        if (settings.galleryEvents && settings.galleryEvents.length > 0) {
+          setEvents(settings.galleryEvents);
+        }
+
+        // Store general settings for footer
+        setGeneralSettings(settings);
+
+        // Load gallery items
+        const items = settings.galleryItems || [];
+        
+        // Initialize likes and isLiked if not present, and validate image URLs
+        const itemsWithLikes = items.map((item) => {
+          // Ensure imageUrl is valid and properly formatted
+          let imageUrl = item.imageUrl || '';
+          
+          // If URL doesn't start with http/https, it's invalid
+          if (imageUrl && !imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+            imageUrl = '';
+          }
+          
+          return {
+            ...item,
+            likes: item.likes || 0,
+            isLiked: item.isLiked || false,
+            imageUrl: imageUrl
+          };
+        });
+
+        setGalleryItems(itemsWithLikes);
+        setFilteredItems(itemsWithLikes);
+        setLoading(false);
+      } catch (error) {
+        console.error('Error loading gallery data:', error);
+        setGalleryItems([]);
+        setFilteredItems([]);
+        setLoading(false);
+      }
+    }, (error) => {
+      console.error('Error listening to gallery settings:', error);
       setLoading(false);
-    }
+    });
+
+    // Cleanup listener on unmount
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -240,12 +217,125 @@ const PublicGalleryPage = () => {
     }
   };
 
-  const handleLike = (id: string) => {
-    setGalleryItems(prev => prev.map(item => 
-      item.id === id 
-        ? { ...item, isLiked: !item.isLiked, likes: item.isLiked ? item.likes - 1 : item.likes + 1 }
-        : item
+  const handleLike = async (id: string) => {
+    // Find the item to update
+    const item = galleryItems.find(i => i.id === id);
+    if (!item) return;
+
+    const newIsLiked = !item.isLiked;
+    const newLikes = newIsLiked ? (item.likes || 0) + 1 : Math.max(0, (item.likes || 0) - 1);
+    
+    // Update local state immediately for better UX
+    setGalleryItems(prev => prev.map(i => 
+      i.id === id 
+        ? { ...i, isLiked: newIsLiked, likes: newLikes }
+        : i
     ));
+
+    // Update Firebase
+    try {
+      const settingsRef = doc(db, 'system', 'settings');
+      const settingsDoc = await settingsQueries.getSettings();
+      
+      if (settingsDoc && settingsDoc.galleryItems) {
+        const updatedItems = settingsDoc.galleryItems.map((galleryItem: any) => {
+          if (galleryItem.id === id) {
+            return {
+              ...galleryItem,
+              likes: newLikes,
+              isLiked: newIsLiked
+            };
+          }
+          return galleryItem;
+        });
+        
+        await updateDoc(settingsRef, {
+          galleryItems: updatedItems
+        });
+      }
+    } catch (error) {
+      console.error('Error updating like:', error);
+      // Revert local state on error
+      setGalleryItems(prev => prev.map(i => 
+        i.id === id 
+          ? { ...i, isLiked: item.isLiked, likes: item.likes || 0 }
+          : i
+      ));
+    }
+  };
+
+  const handleShare = async (item: GalleryItem) => {
+    const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
+    const shareText = `${item.title} - ${pageTitle}`;
+    
+    // Use Web Share API if available (mobile devices)
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: item.title,
+          text: shareText,
+          url: shareUrl,
+        });
+      } catch (error: any) {
+        // User cancelled or error occurred
+        if (error.name !== 'AbortError') {
+          console.error('Error sharing:', error);
+        }
+      }
+    } else {
+      // Fallback: Copy link to clipboard
+      try {
+        await navigator.clipboard.writeText(shareUrl);
+        alert('লিঙ্ক ক্লিপবোর্ডে কপি করা হয়েছে!');
+      } catch (error) {
+        console.error('Error copying to clipboard:', error);
+        // Fallback: Show URL in prompt
+        prompt('এই লিঙ্কটি শেয়ার করুন:', shareUrl);
+      }
+    }
+  };
+
+  const handleDownload = async (item: GalleryItem) => {
+    try {
+      // Fetch the image/video as a blob for direct download
+      const response = await fetch(item.imageUrl);
+      if (!response.ok) {
+        throw new Error('Failed to fetch media');
+      }
+      
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      
+      // Get file extension from URL or default
+      const urlExtension = item.imageUrl.split('.').pop()?.split('?')[0] || (item.type === 'video' ? 'mp4' : 'jpg');
+      const fileName = `${item.title || 'gallery-item'}.${urlExtension}`;
+      
+      // Create download link
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      
+      // Cleanup
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error('Error downloading:', error);
+      // Fallback: try direct download link
+      try {
+        const link = document.createElement('a');
+        link.href = item.imageUrl;
+        link.download = `${item.title || 'gallery-item'}.${item.type === 'video' ? 'mp4' : 'jpg'}`;
+        link.target = '_blank';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } catch (fallbackError) {
+        console.error('Fallback download also failed:', fallbackError);
+        alert('ডাউনলোড করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।');
+      }
+    }
   };
 
   const openLightbox = (item: GalleryItem) => {
@@ -299,9 +389,9 @@ const PublicGalleryPage = () => {
                 <Camera className="w-8 h-8 text-white" />
               </div>
             </div>
-            <h1 className="text-4xl font-bold mb-4">ফটো গ্যালারি</h1>
+            <h1 className="text-4xl font-bold mb-4">{pageTitle}</h1>
             <p className="text-xl text-pink-100 max-w-3xl mx-auto">
-              আমাদের স্কুলের স্মরণীয় মুহূর্তগুলো এবং বিশেষ অনুষ্ঠানগুলোর ছবি দেখুন
+              {pageSubtitle}
             </p>
           </div>
         </div>
@@ -401,7 +491,7 @@ const PublicGalleryPage = () => {
         {/* Gallery Count */}
         <div className="mb-6">
           <p className="text-gray-600">
-            {filteredItems.length}টি ছবি পাওয়া গেছে
+            {filteredItems.length}টি {filteredItems.length === 1 ? 'আইটেম' : 'আইটেম'} পাওয়া গেছে
           </p>
         </div>
 
@@ -421,19 +511,86 @@ const PublicGalleryPage = () => {
               <div key={item.id} className={`bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-xl transition-shadow ${
                 viewMode === 'list' ? 'flex' : ''
               }`}>
-                <div className={`${viewMode === 'list' ? 'w-1/3' : 'w-full'} relative group`}>
-                  <img
-                    src={item.imageUrl}
-                    alt={item.title}
-                    className={`w-full object-cover cursor-pointer transition-transform group-hover:scale-105 ${
-                      viewMode === 'list' ? 'h-48' : 'h-64'
-                    }`}
-                    onClick={() => openLightbox(item)}
-                  />
-                  <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-30 transition-all duration-300 flex items-center justify-center">
-                    <Eye className="w-8 h-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </div>
-                  <div className="absolute top-2 right-2">
+                <div className={`${viewMode === 'list' ? 'w-1/3' : 'w-full'} relative overflow-hidden`} style={{ 
+                  height: viewMode === 'list' ? '200px' : '320px',
+                  backgroundColor: '#f3f4f6'
+                }}>
+                  {item.type === 'video' ? (
+                    <video
+                      src={item.imageUrl}
+                      className="w-full h-full object-cover cursor-pointer"
+                      style={{ 
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover'
+                      }}
+                      onClick={() => openLightbox(item)}
+                      controls={false}
+                      muted
+                      preload="metadata"
+                    />
+                  ) : (
+                    <>
+                      {item.imageUrl ? (
+                        <img
+                          key={`img-${item.id}`}
+                          src={getProxyUrl(item.imageUrl)}
+                          alt={item.title || 'Gallery image'}
+                          className="w-full h-full object-cover cursor-pointer"
+                          style={{ 
+                            width: '100%',
+                            height: '100%',
+                            display: 'block',
+                            objectFit: 'cover'
+                          }}
+                          loading="lazy"
+                          onClick={() => openLightbox(item)}
+                          onLoad={(e) => {
+                            const target = e.target as HTMLImageElement;
+                            console.log('✅ Image loaded successfully:', item.title, target.src);
+                          }}
+                          onError={(e) => {
+                            console.error('❌ Image failed to load:', item.title, item.imageUrl);
+                            const target = e.target as HTMLImageElement;
+                            target.style.display = 'none';
+                            
+                            const parent = target.parentElement;
+                            if (parent && !parent.querySelector('.image-error-placeholder')) {
+                              const placeholder = document.createElement('div');
+                              placeholder.className = `image-error-placeholder absolute inset-0 flex items-center justify-center bg-gray-200 text-gray-500`;
+                              placeholder.style.width = '100%';
+                              placeholder.style.height = '100%';
+                              placeholder.innerHTML = `
+                                <div class="text-center">
+                                  <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                  </svg>
+                                  <p class="text-sm">ছবি লোড করতে পারেনি</p>
+                                </div>
+                              `;
+                              parent.appendChild(placeholder);
+                            }
+                          }}
+                        />
+                      ) : (
+                        <div className="absolute inset-0 flex items-center justify-center bg-gray-100 text-gray-400" style={{ width: '100%', height: '100%' }}>
+                          <div className="text-center">
+                            <Camera className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                            <p className="text-sm">ছবির URL নেই</p>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {/* Category badges */}
+                  <div className="absolute top-2 right-2 flex items-center space-x-2 z-10">
+                    {item.type === 'video' && (
+                      <span className="px-2 py-1 bg-red-600 bg-opacity-80 text-white text-xs rounded-full flex items-center space-x-1">
+                        <Video className="w-3 h-3" />
+                        <span>ভিডিও</span>
+                      </span>
+                    )}
                     <span className="px-2 py-1 bg-black bg-opacity-50 text-white text-xs rounded-full">
                       {getCategoryText(item.category)}
                     </span>
@@ -455,13 +612,19 @@ const PublicGalleryPage = () => {
                   <div className="flex items-center justify-between text-sm text-gray-500 mb-4">
                     <div className="flex items-center space-x-1">
                       <User className="w-4 h-4" />
-                      <span>{item.photographer}</span>
+                      <span>{item.uploadedBy || item.photographer}</span>
                     </div>
                     <div className="flex items-center space-x-1">
                       <Calendar className="w-4 h-4" />
                       <span>{formatDate(item.date)}</span>
                     </div>
                   </div>
+                  {item.location && (
+                    <div className="flex items-center space-x-1 text-sm text-gray-500 mb-4">
+                      <MapPin className="w-4 h-4" />
+                      <span>{item.location}</span>
+                    </div>
+                  )}
                   
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-4">
@@ -474,12 +637,18 @@ const PublicGalleryPage = () => {
                         <Heart className={`w-5 h-5 ${item.isLiked ? 'fill-current' : ''}`} />
                         <span>{item.likes}</span>
                       </button>
-                      <button className="flex items-center space-x-1 text-gray-400 hover:text-gray-600 transition-colors">
+                      <button 
+                        onClick={() => handleShare(item)}
+                        className="flex items-center space-x-1 text-gray-400 hover:text-gray-600 transition-colors"
+                      >
                         <Share2 className="w-5 h-5" />
                         <span>শেয়ার</span>
                       </button>
                     </div>
-                    <button className="flex items-center space-x-1 text-gray-400 hover:text-gray-600 transition-colors">
+                    <button 
+                      onClick={() => handleDownload(item)}
+                      className="flex items-center space-x-1 text-gray-400 hover:text-gray-600 transition-colors"
+                    >
                       <Download className="w-5 h-5" />
                       <span>ডাউনলোড</span>
                     </button>
@@ -494,40 +663,78 @@ const PublicGalleryPage = () => {
       {/* Lightbox Modal */}
       {selectedImage && (
         <div className="fixed inset-0 bg-black bg-opacity-90 z-50 flex items-center justify-center p-4">
-          <div className="relative max-w-4xl max-h-full">
+          <div className="relative max-w-4xl max-h-full w-full">
             <button
               onClick={closeLightbox}
-              className="absolute top-4 right-4 text-white hover:text-gray-300 z-10"
+              className="absolute top-4 right-4 text-white hover:text-gray-300 z-10 bg-black bg-opacity-50 rounded-full p-2"
             >
-              <X className="w-8 h-8" />
+              <X className="w-6 h-6" />
             </button>
             
-            <img
-              src={selectedImage.imageUrl}
-              alt={selectedImage.title}
-              className="max-w-full max-h-full object-contain"
-            />
+            {selectedImage.type === 'video' ? (
+              <video
+                src={getProxyUrl(selectedImage.imageUrl)}
+                controls
+                autoPlay
+                className="max-w-full max-h-[80vh] object-contain"
+              />
+            ) : (
+              <img
+                src={getProxyUrl(selectedImage.imageUrl || '')}
+                alt={selectedImage.title}
+                className="max-w-full max-h-[80vh] object-contain bg-gray-100"
+                onError={(e) => {
+                  // Try transformed URL as fallback
+                  const target = e.target as HTMLImageElement;
+                  if (selectedImage.imageUrl && !selectedImage.imageUrl.includes('tr:')) {
+                    const transformedUrl = transformImageUrl(selectedImage.imageUrl, {
+                      width: 1200,
+                      height: 800,
+                      crop: 'maintain_ratio',
+                      format: 'webp',
+                      quality: 90
+                    }, true); // Use proxy
+                    if (transformedUrl !== selectedImage.imageUrl) {
+                      target.src = transformedUrl;
+                    }
+                  }
+                }}
+              />
+            )}
             
-            <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white p-4">
+            <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-70 text-white p-4">
               <h3 className="text-xl font-semibold mb-2">{selectedImage.title}</h3>
-              <p className="text-sm text-gray-300">{selectedImage.description}</p>
+              {selectedImage.description && (
+                <p className="text-sm text-gray-300 mb-2">{selectedImage.description}</p>
+              )}
+              <div className="flex items-center space-x-4 text-xs text-gray-400">
+                {selectedImage.uploadedBy && (
+                  <span>আপলোডকারী: {selectedImage.uploadedBy}</span>
+                )}
+                {selectedImage.location && (
+                  <span className="flex items-center space-x-1">
+                    <MapPin className="w-3 h-3" />
+                    <span>{selectedImage.location}</span>
+                  </span>
+                )}
+              </div>
             </div>
             
             {currentImageIndex > 0 && (
               <button
                 onClick={prevImage}
-                className="absolute left-4 top-1/2 transform -translate-y-1/2 text-white hover:text-gray-300"
+                className="absolute left-4 top-1/2 transform -translate-y-1/2 text-white hover:text-gray-300 bg-black bg-opacity-50 rounded-full p-3"
               >
-                <ChevronLeft className="w-8 h-8" />
+                <ChevronLeft className="w-6 h-6" />
               </button>
             )}
             
             {currentImageIndex < filteredItems.length - 1 && (
               <button
                 onClick={nextImage}
-                className="absolute right-4 top-1/2 transform -translate-y-1/2 text-white hover:text-gray-300"
+                className="absolute right-4 top-1/2 transform -translate-y-1/2 text-white hover:text-gray-300 bg-black bg-opacity-50 rounded-full p-3"
               >
-                <ChevronRight className="w-8 h-8" />
+                <ChevronRight className="w-6 h-6" />
               </button>
             )}
           </div>
@@ -543,12 +750,12 @@ const PublicGalleryPage = () => {
                 <span className="text-white font-bold text-lg">ই</span>
               </div>
             </div>
-            <h3 className="text-xl font-bold mb-2">আমার স্কুল</h3>
-            <p className="text-gray-400 mb-4">ভালোবাসা দিয়ে শিক্ষা, ইসলামিক মূল্যবোধে জীবন গড়া</p>
+            <h3 className="text-xl font-bold mb-2">{generalSettings?.schoolName || 'আমার স্কুল'}</h3>
+            <p className="text-gray-400 mb-4">{generalSettings?.schoolDescription || 'ভালোবাসা দিয়ে শিক্ষা, ইসলামিক মূল্যবোধে জীবন গড়া'}</p>
             <div className="flex justify-center space-x-6 text-sm text-gray-400">
-              <span>📞 +৮৮০ ১৭১১ ২৩৪৫৬৭</span>
-              <span>✉️ info@iqraschool.edu</span>
-              <span>📍 ঢাকা, বাংলাদেশ</span>
+              <span>📞 {generalSettings?.schoolPhone || '+৮৮০ ১৭১১ ২৩৪৫৬৭'}</span>
+              <span>✉️ {generalSettings?.schoolEmail || 'info@iqraschool.edu'}</span>
+              <span>📍 {generalSettings?.schoolAddress || 'ঢাকা, বাংলাদেশ'}</span>
             </div>
           </div>
         </div>

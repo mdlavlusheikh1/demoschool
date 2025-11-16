@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import AdminLayout from '@/components/AdminLayout';
 import { subjectQueries, Subject, examQueries, examSubjectQueries, examResultQueries, studentQueries } from '@/lib/database-queries';
-import { SCHOOL_ID } from '@/lib/constants';
+import { SCHOOL_ID, SCHOOL_NAME } from '@/lib/constants';
 import {
   Plus, Edit, Trash2, Eye, FileText, Upload, ArrowLeft, Download
 } from 'lucide-react';
@@ -57,6 +57,7 @@ function MarkEntryPage() {
   });
   const router = useRouter();
   const schoolId = SCHOOL_ID;
+  const schoolName = SCHOOL_NAME;
 
   // Real-time data will be loaded from Firebase
 
@@ -74,25 +75,15 @@ function MarkEntryPage() {
     if (selectedExam && availableExams.length > 0) {
       const selectedExamData = availableExams.find(exam => exam.name === selectedExam);
       if (selectedExamData) {
-        console.log('🔄 Auto-loading exam subjects for:', selectedExam, 'Exam ID:', selectedExamData.id || selectedExamData.examId);
         loadExamSubjects(selectedExamData.id || selectedExamData.examId);
       }
     }
   }, [selectedExam, availableExams]);
 
-  // Debug: Log exam subjects when they change
-  useEffect(() => {
-    console.log('📋 Exam subjects updated:', examSubjects.length, 'subjects');
-    examSubjects.forEach((subject, index) => {
-      console.log(`  ${index + 1}. ${subject.subjectName || subject.subject} (${subject.subjectCode || 'no code'}) - Class: ${subject.className || subject.class || 'no class'}`);
-    });
-  }, [examSubjects]);
-
   // Reset subject selection when class or exam changes
   useEffect(() => {
     if (selectedClass || selectedExam) {
       setSelectedSubject('');
-      console.log('🔄 Reset subject selection due to class/exam change');
     }
   }, [selectedClass, selectedExam]);
 
@@ -194,35 +185,6 @@ function MarkEntryPage() {
         });
       });
 
-      // If no classes found, create sample classes
-      if (classesData.length === 0) {
-        console.log('No classes found, creating sample classes...');
-        await createSampleClasses();
-        // Reload classes after creating samples
-        const newClassesSnapshot = await getDocs(collection(db, 'classes'));
-        newClassesSnapshot.forEach((doc) => {
-          const data = doc.data();
-          const possibleClassNames = [
-            data.className, 
-            data.name, 
-            data.class, 
-            data.title, 
-            data.label,
-            data.displayName,
-            data.class_name
-          ].filter(name => name && name.trim());
-          
-          const className = possibleClassNames[0] || `Class ${doc.id}`;
-          
-          classesData.push({
-            id: doc.id,
-            classId: data.classId || data.id || doc.id,
-            className: className,
-            section: data.section || data.division || 'এ',
-            originalData: data
-          });
-        });
-      }
 
       console.log('✅ Processed classes data:', classesData);
       setAvailableClasses(classesData);
@@ -235,53 +197,6 @@ function MarkEntryPage() {
     }
   };
 
-  // Create sample classes for testing
-  const createSampleClasses = async () => {
-    try {
-      console.log('🔄 Creating sample classes...');
-      const { collection, addDoc } = await import('firebase/firestore');
-      const { db } = await import('@/lib/firebase');
-
-      const sampleClasses = [
-        {
-          className: 'প্লে',
-          section: 'এ',
-          schoolId,
-          createdBy: 'admin',
-          isActive: true
-        },
-        {
-          className: 'প্রথম',
-          section: 'এ',
-          schoolId,
-          createdBy: 'admin',
-          isActive: true
-        },
-        {
-          className: 'দ্বিতীয়',
-          section: 'এ',
-          schoolId,
-          createdBy: 'admin',
-          isActive: true
-        },
-        {
-          className: 'তৃতীয়',
-          section: 'এ',
-          schoolId,
-          createdBy: 'admin',
-          isActive: true
-        }
-      ];
-
-      for (const classData of sampleClasses) {
-        await addDoc(collection(db, 'classes'), classData);
-      }
-
-      console.log('✅ Sample classes created successfully');
-    } catch (error) {
-      console.error('❌ Error creating sample classes:', error);
-    }
-  };
 
   // Load exams from Firebase
   const loadExams = async () => {
@@ -317,12 +232,6 @@ function MarkEntryPage() {
       console.log('📚 Raw students data:', studentsData);
       setStudents(studentsData);
       console.log('✅ Loaded students:', studentsData.length);
-      
-      // If no students found, create some sample students
-      if (studentsData.length === 0) {
-        console.log('No students found, creating sample students...');
-        await createSampleStudents();
-      }
     } catch (error) {
       console.error('Error loading students:', error);
     } finally {
@@ -331,221 +240,6 @@ function MarkEntryPage() {
   };
 
 
-  // Create sample students for testing
-  const createSampleStudents = async () => {
-    try {
-      console.log('🔄 Creating sample students...');
-
-      const sampleStudents = [
-        {
-          uid: 'STD001',
-          name: 'মোঃ রাহিম হোসেন',
-          email: 'rahim@example.com',
-          role: 'student' as const,
-          class: 'প্রথম',
-          studentId: 'STD001',
-          roll: '001',
-          schoolId,
-          isActive: true
-        },
-        {
-          uid: 'STD002',
-          name: 'ফাতেমা আক্তার',
-          email: 'fatema@example.com',
-          role: 'student' as const,
-          class: 'প্রথম',
-          studentId: 'STD002',
-          roll: '002',
-          schoolId,
-          isActive: true
-        },
-        {
-          uid: 'STD003',
-          name: 'আব্দুল্লাহ আল মামুন',
-          email: 'abdullah@example.com',
-          role: 'student' as const,
-          class: 'দ্বিতীয়',
-          studentId: 'STD003',
-          roll: '003',
-          schoolId,
-          isActive: true
-        },
-        {
-          uid: 'STD004',
-          name: 'আয়েশা সিদ্দিকা',
-          email: 'ayesha@example.com',
-          role: 'student' as const,
-          class: 'তৃতীয়',
-          studentId: 'STD004',
-          roll: '004',
-          schoolId,
-          isActive: true
-        },
-        // Add students for "প্লে" class
-        {
-          uid: 'STD005',
-          name: 'আহমেদ হাসান',
-          email: 'ahmed@example.com',
-          role: 'student' as const,
-          class: 'প্লে',
-          studentId: 'STD005',
-          roll: '005',
-          schoolId,
-          isActive: true
-        },
-        {
-          uid: 'STD006',
-          name: 'নাজমা খাতুন',
-          email: 'nazma@example.com',
-          role: 'student' as const,
-          class: 'প্লে',
-          studentId: 'STD006',
-          roll: '006',
-          schoolId,
-          isActive: true
-        },
-        {
-          uid: 'STD007',
-          name: 'করিম উদ্দিন',
-          email: 'karim@example.com',
-          role: 'student' as const,
-          class: 'প্লে',
-          studentId: 'STD007',
-          roll: '007',
-          schoolId,
-          isActive: true
-        }
-      ];
-
-      // Create each sample student
-      for (const student of sampleStudents) {
-        await studentQueries.createStudent(student);
-      }
-
-      console.log('✅ Sample students created successfully');
-
-      // Reload students
-      const studentsData = await studentQueries.getAllStudents();
-      setStudents(studentsData);
-    } catch (error) {
-      console.error('❌ Error creating sample students:', error);
-    }
-  };
-
-  // Create sample exam for testing
-  const createSampleExam = async () => {
-    try {
-      console.log('🔄 Creating sample exam...');
-
-      const sampleExam = {
-        name: 'প্রথম সাময়িক পরীক্ষা',
-        nameEn: 'First Term Exam',
-        class: 'প্রথম',
-        subject: 'সকল বিষয়',
-        date: '২০২৪-০২-১৫',
-        startDate: '2024-02-15',
-        endDate: '2024-02-20',
-        time: '১০:০০',
-        duration: '২ ঘণ্টা',
-        totalMarks: 100,
-        students: 25,
-        status: 'সক্রিয়' as const,
-        schoolId,
-        createdBy: 'admin',
-        resultsPublished: false,
-        allowResultView: false,
-        examType: 'সাময়িক' as const,
-        passingMarks: 40,
-        gradingSystem: 'percentage' as const,
-        instructions: 'সকল প্রশ্নের উত্তর দিতে হবে। সময় ২ ঘণ্টা।',
-        venue: 'মূল ভবন'
-      };
-
-      await examQueries.createExam(sampleExam);
-      console.log('✅ Sample exam created successfully');
-
-      // Reload exams
-      const examsData = await examQueries.getAllExams(schoolId);
-      setAvailableExams(examsData);
-    } catch (error) {
-      console.error('❌ Error creating sample exam:', error);
-    }
-  };
-
-  // Create sample mark entries for testing
-  const createSampleMarkEntries = async () => {
-    try {
-      console.log('🔄 Creating sample mark entries...');
-
-      // First ensure we have students and exams
-      if (students.length === 0) {
-        await createSampleStudents();
-      }
-
-      if (availableExams.length === 0) {
-        await createSampleExam();
-      }
-
-      // Get the first exam and students
-      const exam = availableExams[0] || await examQueries.getAllExams(schoolId).then(exams => exams[0]);
-      const examStudents = students.slice(0, 2); // Take first 2 students
-
-      if (!exam || examStudents.length === 0) {
-        console.log('⚠️ Cannot create sample mark entries: missing exam or students');
-        return;
-      }
-
-      // Create sample mark entries
-      const sampleEntries = [
-        {
-          studentId: examStudents[0]?.studentId || examStudents[0]?.uid || 'STD001',
-          studentName: examStudents[0]?.name || examStudents[0]?.displayName || 'মোঃ রাহিম হোসেন',
-          studentRoll: examStudents[0]?.studentId || examStudents[0]?.uid || 'STD001',
-          classId: examStudents[0]?.class || 'প্রথম',
-          className: examStudents[0]?.class || 'প্রথম',
-          subject: 'গণিত',
-          examId: exam.id || exam.examId,
-          examName: exam.name || 'প্রথম সাময়িক পরীক্ষা',
-          obtainedMarks: 85,
-          totalMarks: 100,
-          percentage: 85,
-          grade: 'A',
-          isAbsent: false,
-          schoolId,
-          enteredBy: 'admin'
-        },
-        {
-          studentId: examStudents[1]?.studentId || examStudents[1]?.uid || 'STD002',
-          studentName: examStudents[1]?.name || examStudents[1]?.displayName || 'ফাতেমা আক্তার',
-          studentRoll: examStudents[1]?.studentId || examStudents[1]?.uid || 'STD002',
-          classId: examStudents[1]?.class || 'প্রথম',
-          className: examStudents[1]?.class || 'প্রথম',
-          subject: 'গণিত',
-          examId: exam.id || exam.examId,
-          examName: exam.name || 'প্রথম সাময়িক পরীক্ষা',
-          obtainedMarks: 72,
-          totalMarks: 100,
-          percentage: 72,
-          grade: 'B+',
-          isAbsent: false,
-          schoolId,
-          enteredBy: 'admin'
-        }
-      ];
-
-      // Save sample entries
-      for (const entry of sampleEntries) {
-        await examResultQueries.saveExamResult(entry);
-      }
-
-      console.log('✅ Sample mark entries created successfully');
-
-      // Reload all exam results to show the new entries
-      await loadAllExamResults();
-    } catch (error) {
-      console.error('❌ Error creating sample mark entries:', error);
-    }
-  };
 
   // Load all exam results from Firebase
   const loadAllExamResults = async () => {
@@ -556,13 +250,6 @@ function MarkEntryPage() {
       const exams = await examQueries.getAllExams(schoolId);
       console.log('📚 Available exams:', exams.length);
 
-      if (exams.length === 0) {
-        console.log('⚠️ No exams found, creating sample exam for testing...');
-        await createSampleExam();
-        // Reload exams after creating sample
-        const updatedExams = await examQueries.getAllExams(schoolId);
-        exams.push(...updatedExams);
-      }
 
       const results: MarkEntry[] = [];
 
@@ -638,11 +325,6 @@ function MarkEntryPage() {
       setMarkEntries(results);
       console.log('✅ Total mark entries loaded:', results.length);
 
-      // If no results found, create sample data for testing
-      if (results.length === 0) {
-        console.log('⚠️ No mark entries found, creating sample data...');
-        await createSampleMarkEntries();
-      }
     } catch (error) {
       console.error('❌ Error loading exam results:', error);
       setMarkEntries([]);
@@ -734,6 +416,7 @@ function MarkEntryPage() {
         remarks: status === 'পাস' ? 'সফল' : 'অনুত্তীর্ণ',
         isAbsent: false,
         schoolId,
+        schoolName,
         enteredBy: 'admin'
       };
 
@@ -970,6 +653,7 @@ function MarkEntryPage() {
         remarks: status === 'পাস' ? 'সফল' : 'অনুত্তীর্ণ',
         isAbsent: false,
         schoolId,
+        schoolName,
         enteredBy: 'admin'
       };
 
@@ -1079,9 +763,15 @@ function MarkEntryPage() {
       .map(examSubject => examSubject.subjectName || examSubject.subject);
 
     // Also get subjects from existing mark entries for this specific exam and class with flexible matching
+    // IMPORTANT: Only show marks from the selected exam, not from other exams
     const examClassMarkEntrySubjects = [...new Set(
       markEntries
         .filter(entry => {
+          // CRITICAL: Only include entries from the selected exam
+          if (entry.examName !== selectedExam) {
+            return false; // Don't include marks from other exams
+          }
+          
           // Check class match with flexible matching
           const normalizeText = (text: string) => text ? text.trim().normalize('NFC').toLowerCase() : '';
           const normalizedEntryClass = normalizeText(entry.class);
@@ -1099,7 +789,7 @@ function MarkEntryPage() {
                               normalizedSelectedClass === 'চতুর্থ' && (normalizedEntryClass.includes('চতুর্থ') || normalizedEntryClass.includes('৪')) ||
                               normalizedSelectedClass === 'পঞ্চম' && (normalizedEntryClass.includes('পঞ্চম') || normalizedEntryClass.includes('৫'));
 
-          return classMatches && entry.examName === selectedExam;
+          return classMatches;
         })
         .map(entry => entry.subject)
         .filter(subject => subject && subject.trim() !== '' && subject.length > 1)
@@ -1295,11 +985,39 @@ function MarkEntryPage() {
 
   // Group students with their mark entries
   const groupedStudents = filteredStudents.map(student => {
-    const studentMarks = markEntries.filter(entry =>
-      (entry.studentId === student.studentId || entry.studentId === student.uid || entry.studentId === student.id) &&
-      (!selectedExam || entry.examName === selectedExam) &&
-      (!selectedSubject || entry.subject === selectedSubject)
-    );
+    // Filter marks based on selected exam and subject
+    // Only show marks for the selected exam if an exam is selected
+    const studentMarks = markEntries.filter(entry => {
+      // First check if student matches - use strict matching
+      const studentId = student.studentId || student.uid || student.id || '';
+      const entryStudentId = entry.studentId || '';
+      
+      // Strict student ID matching - must match exactly
+      const studentMatches = entryStudentId === studentId;
+      
+      if (!studentMatches) {
+        return false; // Don't show marks for other students
+      }
+      
+      // CRITICAL: If exam is selected, ONLY show marks for that specific exam
+      // This prevents showing marks from other exams for new students
+      if (selectedExam && selectedExam.trim() !== '') {
+        const entryExamName = entry.examName || '';
+        if (entryExamName !== selectedExam) {
+          return false; // Don't show marks from other exams
+        }
+      }
+      
+      // If subject is selected, only show marks for that subject
+      if (selectedSubject && selectedSubject.trim() !== '') {
+        const entrySubject = entry.subject || '';
+        if (entrySubject !== selectedSubject) {
+          return false;
+        }
+      }
+      
+      return true;
+    });
 
     return {
       student: {
@@ -1315,8 +1033,34 @@ function MarkEntryPage() {
         status: 'পাস' as 'পাস' | 'ফেল'
       },
       subjects: allSubjectsList.reduce((acc, subject) => {
-        const markEntry = studentMarks.find(entry => entry.subject === subject);
-        acc[subject] = markEntry || null;
+        // Only show marks for the selected exam and subject combination
+        // studentMarks is already filtered by selectedExam, so we just need to match subject
+        const markEntry = studentMarks.find(entry => {
+          // CRITICAL: Must match both subject AND exam (double check for safety)
+          const subjectMatches = entry.subject === subject;
+          
+          // Double check exam match - this should already be filtered, but verify
+          if (selectedExam) {
+            if (entry.examName !== selectedExam) {
+              return false; // This should not happen if filtering is correct, but double-check
+            }
+          }
+          
+          return subjectMatches;
+        });
+        
+        // Only add if we found a valid entry that matches the selected exam
+        if (markEntry) {
+          // Final verification: ensure it matches selected exam if exam is selected
+          if (selectedExam && markEntry.examName !== selectedExam) {
+            acc[subject] = null; // Don't show marks from other exams
+          } else {
+            acc[subject] = markEntry;
+          }
+        } else {
+          acc[subject] = null; // No marks found for this subject
+        }
+        
         return acc;
       }, {} as { [key: string]: any })
     };
@@ -1538,9 +1282,17 @@ function MarkEntryPage() {
                     </td>
                     {allSubjectsList.map((subject) => {
                       const subjectEntry = group.subjects[subject];
+                      
+                      // CRITICAL: Only show marks if they match the selected exam
+                      // If exam is selected, verify the entry matches that exam
+                      const shouldShowMarks = subjectEntry && (
+                        !selectedExam || // If no exam selected, show all marks
+                        subjectEntry.examName === selectedExam // If exam selected, only show marks from that exam
+                      );
+                      
                       return (
                         <td key={subject} className="px-4 py-4 whitespace-nowrap text-center text-sm">
-                          {subjectEntry ? (
+                          {shouldShowMarks ? (
                             <div className="text-gray-900 font-medium text-sm">
                               {toBengaliNumerals(subjectEntry.obtainedMarks)}
                             </div>

@@ -4,8 +4,10 @@ import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { teacherQueries, settingsQueries, User as TeacherUser } from '@/lib/database-queries';
+import { SCHOOL_ID, SCHOOL_NAME } from '@/lib/constants';
 import {
   Home,
   Users,
@@ -42,7 +44,13 @@ import {
   User,
   FileText,
   Save,
-  ArrowLeft
+  ArrowLeft,
+  Globe,
+  BookOpen as BookOpenIcon,
+  MessageSquare,
+  Gift,
+  Sparkles,
+  Users as UsersIcon
 } from 'lucide-react';
 
 function EditTeacherPage() {
@@ -57,9 +65,11 @@ function EditTeacherPage() {
   const [showSuccess, setShowSuccess] = useState(false);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('personal');
+  const [imageError, setImageError] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
   const teacherId = searchParams.get('id');
+  const { userData } = useAuth();
 
   // Teacher form state
   const [editTeacher, setEditTeacher] = useState({
@@ -138,6 +148,11 @@ function EditTeacherPage() {
     '১০-১৫ বছর', '১৫-২০ বছর', '২০ বছরের বেশি'
   ];
 
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
@@ -214,7 +229,7 @@ function EditTeacherPage() {
           emergencyContactPhone: teacherData.emergencyContactPhone || '',
           emergencyContactRelation: teacherData.emergencyContactRelation || '',
 
-          profileImage: null,
+          profileImage: teacherData.profileImage || null,
           resume: null,
           certificates: [],
           languages: teacherData.languages || '',
@@ -263,32 +278,100 @@ function EditTeacherPage() {
     }
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 10 * 1024 * 1024) {
-        setErrors({ ...errors, profileImage: 'ফাইলের আকার ১০MB এর বেশি হতে পারবে না' });
-        return;
-      }
+    if (!file) {
+      return;
+    }
 
-      if (!file.type.startsWith('image/')) {
-        setErrors({ ...errors, profileImage: 'শুধুমাত্র ছবি ফাইল আপলোড করুন' });
+    if (file.size > 10 * 1024 * 1024) {
+      setErrors({ ...errors, profileImage: 'ফাইলের আকার ১০MB এর বেশি হতে পারবে না' });
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setErrors({ ...errors, profileImage: 'শুধুমাত্র ছবি ফাইল আপলোড করুন' });
+      return;
+    }
+
+    try {
+      const publicKey = process.env.NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY;
+      const urlEndpoint = process.env.NEXT_PUBLIC_IMAGEKIT_URL_ENDPOINT;
+
+      if (!publicKey || !urlEndpoint) {
+        setErrors({ ...errors, profileImage: 'ImageKit কনফিগার করা নেই। প্রশাসকের সাথে যোগাযোগ করুন।' });
+        setImagePreview(teacher?.profileImage || null);
+        setEditTeacher(prev => ({ ...prev, profileImage: null }));
         return;
       }
 
       setErrors({ ...errors, profileImage: '' });
+
       const reader = new FileReader();
-      reader.onload = (e) => {
-        setImagePreview(e.target?.result as string);
+      reader.onload = event => {
+        setImagePreview(event.target?.result as string);
       };
       reader.readAsDataURL(file);
-      setEditTeacher({ ...editTeacher, profileImage: file });
+
+      const authResponse = await fetch('/api/imagekit', { cache: 'no-store' });
+      if (!authResponse.ok) {
+        const authError = await authResponse.json().catch(() => null);
+        console.error('ImageKit auth error:', authError);
+        setErrors({ ...errors, profileImage: authError?.message || 'ImageKit কনফিগার করা নেই। প্রশাসকের সাথে যোগাযোগ করুন।' });
+        setImagePreview(teacher?.profileImage || null);
+        setEditTeacher(prev => ({ ...prev, profileImage: null }));
+        return;
+      }
+
+      const authData = await authResponse.json();
+      const settings = await settingsQueries.getSettings();
+      const schoolId = settings?.schoolCode || SCHOOL_ID;
+      const teacherIdValue = teacher?.employeeId || `teacher-${teacher?.uid || Date.now()}`;
+      const fileName = `teacher-${teacherIdValue}-${Date.now()}`;
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('fileName', fileName);
+      formData.append('folder', `/school-management/teachers/${schoolId}`);
+      formData.append('tags', `teacher,profile,${schoolId},${teacherIdValue}`);
+      formData.append('publicKey', publicKey);
+      formData.append('token', authData.token);
+      formData.append('expire', authData.expire?.toString() || '');
+      formData.append('signature', authData.signature);
+
+      const uploadResponse = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
+        method: 'POST',
+        body: formData,
+        cache: 'no-store'
+      });
+
+      const uploadPayload = await uploadResponse.json().catch(() => null);
+      if (!uploadResponse.ok || !uploadPayload?.url) {
+        console.error('ImageKit upload failed:', uploadPayload);
+        setErrors({ ...errors, profileImage: 'ছবি আপলোড করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।' });
+        setImagePreview(teacher?.profileImage || null);
+        setEditTeacher(prev => ({ ...prev, profileImage: null }));
+        return;
+      }
+
+      setEditTeacher(prev => ({
+        ...prev,
+        profileImage: uploadPayload.url as string
+      }));
+      setImagePreview(uploadPayload.url as string);
+      setTeacher(prev => prev ? { ...prev, profileImage: uploadPayload.url as string } : prev);
+    } catch (error) {
+      console.error('❌ Error uploading image:', error);
+      setErrors({ ...errors, profileImage: 'ছবি আপলোড করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।' });
+      setImagePreview(teacher?.profileImage || null);
+      setEditTeacher(prev => ({ ...prev, profileImage: null }));
     }
   };
 
   const removeImage = () => {
     setEditTeacher({ ...editTeacher, profileImage: null });
     setImagePreview(teacher?.profileImage || null);
+    setTeacher(prev => prev ? { ...prev, profileImage: null } : prev);
   };
 
   const validateForm = () => {
@@ -399,6 +482,16 @@ function EditTeacherPage() {
         schoolName: editTeacher.schoolName
       };
 
+      // Add profile image if it was uploaded or updated (should be a string URL after upload)
+      if (editTeacher.profileImage && typeof editTeacher.profileImage === 'string') {
+        teacherData.profileImage = editTeacher.profileImage;
+      } else if (teacher.profileImage) {
+        // Keep existing profile image if no new one uploaded
+        teacherData.profileImage = teacher.profileImage;
+      }
+
+      console.log('💾 Updating teacher with profileImage:', teacherData.profileImage);
+
       await teacherQueries.updateTeacher(teacher.uid, teacherData);
 
       setShowSuccess(true);
@@ -470,17 +563,20 @@ function EditTeacherPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: true },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -567,10 +663,21 @@ function EditTeacherPage() {
 
               <div className="flex items-center space-x-4 h-full">
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">
-                    {user?.email?.charAt(0).toUpperCase()}
-                  </span>
+                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                  {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                    <img
+                      src={(userData as any)?.photoURL || user?.photoURL || ''}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => {
+                        setImageError(true);
+                      }}
+                    />
+                  ) : (
+                    <span className="text-white font-medium text-sm">
+                      {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

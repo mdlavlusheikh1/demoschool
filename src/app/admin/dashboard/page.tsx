@@ -1,8 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import AdminLayout from '@/components/AdminLayout';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import { useAuth } from '@/contexts/AuthContext';
 import { SCHOOL_ID } from '@/lib/constants';
 import {
   Users,
@@ -14,7 +16,9 @@ import {
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
-import { userQueries, accountingQueries, studentQueries, teacherQueries, parentQueries } from '@/lib/database-queries';
+import { accountingQueries, settingsQueries, userQueries, studentQueries } from '@/lib/database-queries';
+import { db } from '@/lib/firebase';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 
 function AdminDashboard() {
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -38,24 +42,79 @@ function AdminDashboard() {
   // Fetch dashboard data
   const fetchDashboardData = async () => {
     try {
-      const schoolId = SCHOOL_ID;
+      const settings = await settingsQueries.getSettings();
+      const schoolId = settings?.schoolCode || SCHOOL_ID;
 
-      // Fetch all data in parallel
       const [
         students,
         teachers,
-        parents,
-        financialSummary,
-        studentStats
+        financialSummary
       ] = await Promise.all([
         studentQueries.getStudentsBySchool(schoolId),
-        teacherQueries.getTeachersBySchool(schoolId),
-        parentQueries.getParentsBySchool(schoolId),
-        accountingQueries.getFinancialSummary(schoolId),
-        studentQueries.getStudentStats(schoolId)
+        userQueries.getUsersByRole('teacher'),
+        accountingQueries.getFinancialSummary(schoolId)
       ]);
 
-      // Calculate donation amounts (transactions with category 'অনুদান')
+      const teachersBySchool = teachers.filter(teacher => teacher.schoolId === schoolId);
+      // Filter only active and approved students for dashboard count
+      // Only count students that are both active and explicitly approved
+      const activeApprovedStudents = students.filter(student => 
+        student.isActive === true && student.isApproved === true
+      );
+      const guardianContacts = new Set<string>();
+      const normalizeValue = (value?: string | null) => (typeof value === 'string' ? value.trim() : '');
+      const mapGenderKey = (value: string) => {
+        const normalized = value.toLowerCase();
+        if (['male', 'm', 'পুরুষ', 'ছেলে', 'boy'].includes(normalized)) {
+          return 'male';
+        }
+        if (['female', 'f', 'মহিলা', 'মেয়ে', 'girl'].includes(normalized)) {
+          return 'female';
+        }
+        return null;
+      };
+
+      activeApprovedStudents.forEach(student => {
+        const fatherName = normalizeValue((student as any).fatherName);
+        const fatherPhone = normalizeValue((student as any).fatherPhone);
+        const motherName = normalizeValue((student as any).motherName);
+        const motherPhone = normalizeValue((student as any).motherPhone);
+        const guardianName = normalizeValue(student.guardianName);
+        const guardianPhone = normalizeValue(student.guardianPhone);
+
+        // Primary guardian: guardianPhone/guardianName takes priority
+        // If no guardian, use fatherPhone/fatherName
+        // If no father, use motherPhone/motherName
+        // Count unique phone numbers only (one per student)
+        if (guardianPhone) {
+          guardianContacts.add(guardianPhone);
+        } else if (fatherPhone) {
+          guardianContacts.add(fatherPhone);
+        } else if (motherPhone) {
+          guardianContacts.add(motherPhone);
+        } else if (guardianName) {
+          // If no phone, use name as fallback
+          guardianContacts.add(`name_${guardianName}`);
+        } else if (fatherName) {
+          guardianContacts.add(`name_${fatherName}`);
+        } else if (motherName) {
+          guardianContacts.add(`name_${motherName}`);
+        }
+      });
+
+      const guardianCount = guardianContacts.size;
+
+      const genderCounts = activeApprovedStudents.reduce(
+        (acc, student) => {
+          const genderKey = mapGenderKey(normalizeValue(student.gender));
+          if (genderKey) {
+            acc[genderKey] += 1;
+          }
+          return acc;
+        },
+        { male: 0, female: 0 }
+      );
+
       const allTransactions = await accountingQueries.getAllTransactions(schoolId);
       const donationTransactions = allTransactions.filter(t =>
         t.category === 'অনুদান' && t.status === 'completed'
@@ -69,15 +128,17 @@ function AdminDashboard() {
         .filter(t => t.type === 'expense')
         .reduce((sum, t) => sum + t.amount, 0);
 
+      const totalStudents = activeApprovedStudents.length;
+
       setDashboardData({
-        students: students.length,
-        teachers: teachers.length,
-        parents: parents.length,
-        totalIncome: financialSummary.totalIncome,
-        totalExpense: financialSummary.totalExpense,
-        maleStudents: studentStats.studentsByGender.male || 0,
-        femaleStudents: studentStats.studentsByGender.female || 0,
-        mosqueCount: 0, // This would need to be calculated from a different source
+        students: totalStudents,
+        teachers: teachersBySchool.length,
+        parents: guardianCount,
+        totalIncome: financialSummary.totalIncome || 0,
+        totalExpense: financialSummary.totalExpense || 0,
+        maleStudents: genderCounts.male,
+        femaleStudents: genderCounts.female,
+        mosqueCount: 0,
         donationCollected,
         donationSpent,
         loading: false,
@@ -90,9 +151,32 @@ function AdminDashboard() {
     }
   };
 
-  // Auto-refresh every minute
+  // Real-time listener for students and auto-refresh
   useEffect(() => {
     fetchDashboardData(); // Initial fetch
+
+    // Set up real-time listener for students
+    const settingsPromise = settingsQueries.getSettings();
+    settingsPromise.then(async (settings) => {
+      const schoolId = settings?.schoolCode || SCHOOL_ID;
+      
+      const q = query(
+        collection(db, 'students'),
+        where('role', '==', 'student'),
+        where('schoolId', '==', schoolId),
+        where('isActive', '==', true)
+      );
+
+      const unsubscribe = onSnapshot(q, () => {
+        // When students change, refresh dashboard data
+        console.log('🔄 Students updated - refreshing dashboard');
+        fetchDashboardData();
+      }, (error) => {
+        console.error('Error in real-time listener:', error);
+      });
+
+      return () => unsubscribe();
+    });
 
     const interval = setInterval(() => {
       fetchDashboardData();
@@ -446,6 +530,35 @@ function AdminDashboard() {
 }
 
 export default function AdminDashboardWrapper() {
+  const { userData, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    // Redirect teachers to their dashboard
+    if (!loading && userData?.role === 'teacher') {
+      router.push('/teacher/dashboard');
+      return;
+    }
+  }, [userData, loading, router]);
+
+  // Show loading while checking auth
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  // Redirect teachers immediately (don't wait for ProtectedRoute)
+  if (userData?.role === 'teacher') {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
   return (
     <ProtectedRoute requireAuth={true}>
       <AdminDashboard />

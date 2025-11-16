@@ -4,9 +4,12 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { studentQueries, User as StudentUser } from '@/lib/database-queries';
 import { QRUtils } from '@/lib/qr-utils';
+import { db } from '@/lib/firebase';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import {
   Home,
   Users,
@@ -39,7 +42,15 @@ import {
   IdCard,
   ArrowLeft,
   Printer,
-  Filter
+  Filter,
+  Globe,
+  FileText,
+  BookOpen as BookOpenIcon,
+  Award,
+  MessageSquare,
+  Gift,
+  Sparkles,
+  Users as UsersIcon
 } from 'lucide-react';
 
 function StudentIdCardsPage() {
@@ -53,20 +64,53 @@ function StudentIdCardsPage() {
   const [qrCodes, setQrCodes] = useState<Map<string, string>>(new Map());
   const [loadingQRCodes, setLoadingQRCodes] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
+  const [imageError, setImageError] = useState(false);
   const router = useRouter();
+  const { userData } = useAuth();
+
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
 
   useEffect(() => {
+    let firestoreUnsubscribe: (() => void) | null = null;
+
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUser(user);
         loadStudents();
+        
+        // Set up real-time listener for students
+        const q = query(
+          collection(db, 'students'),
+          where('role', '==', 'student'),
+          where('isActive', '==', true)
+        );
+
+        firestoreUnsubscribe = onSnapshot(q, (snapshot) => {
+          const studentsData = snapshot.docs.map(doc => ({
+            uid: doc.id,
+            ...doc.data()
+          } as StudentUser));
+          
+          console.log('🔄 Real-time update - ID cards page:', studentsData.length);
+          setStudents(studentsData);
+        }, (error) => {
+          console.error('Error in real-time listener:', error);
+        });
       } else {
         router.push('/auth/login');
       }
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (firestoreUnsubscribe) {
+        firestoreUnsubscribe();
+      }
+    };
   }, [router]);
 
   useEffect(() => {
@@ -114,8 +158,8 @@ function StudentIdCardsPage() {
     try {
       const { qrCode } = await QRUtils.generateStudentQR(
         student.uid,
-        'iqra-school',
-        student.studentId || student.uid
+        '102330', // Updated schoolId
+        student.rollNumber || student.studentId || student.uid
       );
       setQrCodes(prev => new Map(prev.set(student.uid, qrCode)));
     } catch (error) {
@@ -174,6 +218,95 @@ function StudentIdCardsPage() {
     } catch (error) {
       console.error('Error downloading all QR codes:', error);
       setError('সকল QR কোড ডাউনলোড করতে সমস্যা হয়েছে');
+    }
+  };
+
+  const downloadIdCardsAsPDF = async () => {
+    try {
+      // Dynamically import jsPDF
+      const { default: jsPDF } = await import('jspdf');
+
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pageWidth = 210; // A4 width in mm
+      const pageHeight = 297; // A4 height in mm
+      const cardWidth = 64; // Width for each card (front+back combined)
+      const cardHeight = 100; // Height for each card
+      const margin = 10;
+      const cardsPerRow = 3;
+      const cardsPerColumn = 2;
+      const cardsPerPage = 6;
+
+      let cardCount = 0;
+      let isFirstPage = true;
+
+      for (let i = 0; i < filteredStudents.length; i++) {
+        const student = filteredStudents[i];
+        
+        // Add new page if needed
+        if (cardCount % cardsPerPage === 0 && !isFirstPage) {
+          pdf.addPage();
+        }
+        isFirstPage = false;
+
+        const cardIndex = cardCount % cardsPerPage;
+        const row = Math.floor(cardIndex / cardsPerRow);
+        const col = cardIndex % cardsPerRow;
+
+        // Calculate position
+        const x = margin + (col * (cardWidth + margin));
+        const y = margin + (row * (cardHeight + margin));
+
+        // Get the ID card elements
+        const frontCard = document.getElementById(`id-card-front-${student.uid}`);
+        const backCard = document.getElementById(`id-card-back-${student.uid}`);
+
+        if (frontCard && backCard) {
+          try {
+            // Use jsPDF's html method to convert HTML to PDF
+            await pdf.html(frontCard, {
+              callback: () => {},
+              x: x,
+              y: y,
+              width: cardWidth / 2 - 1,
+              windowWidth: 240,
+              html2canvas: {
+                scale: 0.8,
+                useCORS: true,
+                logging: false
+              }
+            });
+
+            await pdf.html(backCard, {
+              callback: () => {},
+              x: x + (cardWidth / 2) + 1,
+              y: y,
+              width: cardWidth / 2 - 1,
+              windowWidth: 240,
+              html2canvas: {
+                scale: 0.8,
+                useCORS: true,
+                logging: false
+              }
+            });
+          } catch (canvasError) {
+            console.error(`Error capturing card for student ${student.uid}:`, canvasError);
+          }
+        } else {
+          console.warn(`Card elements not found for student ${student.uid}`);
+        }
+
+        cardCount++;
+      }
+
+      // Save the PDF
+      const timestamp = new Date().toISOString().slice(0, 10);
+      const filename = `Student_ID_Cards_${timestamp}.pdf`;
+      pdf.save(filename);
+      
+      // Success - no alert needed, download will start automatically
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      alert('PDF তৈরি করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।');
     }
   };
 
@@ -240,24 +373,27 @@ function StudentIdCardsPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
       {/* Sidebar */}
-      <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 lg:flex lg:flex-col ${
+      <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:sticky lg:top-0 lg:h-screen lg:flex lg:flex-col overflow-y-auto ${
         sidebarOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
         <div className="flex items-center h-16 px-6 border-b border-gray-200 bg-white">
@@ -337,10 +473,21 @@ function StudentIdCardsPage() {
 
               <div className="flex items-center space-x-4 h-full">
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">
-                    {user?.email?.charAt(0).toUpperCase()}
-                  </span>
+                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                  {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                    <img
+                      src={(userData as any)?.photoURL || user?.photoURL || ''}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => {
+                        setImageError(true);
+                      }}
+                    />
+                  ) : (
+                    <span className="text-white font-medium text-sm">
+                      {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -409,6 +556,15 @@ function StudentIdCardsPage() {
                     <span>সকল QR ডাউনলোড</span>
                   </button>
                 )}
+                {filteredStudents.length > 0 && (
+                  <button
+                    onClick={downloadIdCardsAsPDF}
+                    className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center space-x-2"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>PDF ডাউনলোড (A4)</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -419,6 +575,7 @@ function StudentIdCardsPage() {
               <div key={student.uid} className="flex flex-col items-center space-y-4">
                 {/* Front Side */}
                 <div
+                  id={`id-card-front-${student.uid}`}
                   className="bg-white border-2 border-gray-300 overflow-hidden relative print:shadow-none"
                   style={{
                     width: '240px',
@@ -429,7 +586,7 @@ function StudentIdCardsPage() {
                   {/* Header */}
                   <div className="p-3 text-center bg-white">
                     <h2 className="font-bold text-lg text-blue-900 leading-tight mb-1">
-                      আমার স্কুল নুরানী একাডেমী
+                      ইকরা নূরানী একাডেমি
                     </h2>
                     <p className="text-xs text-gray-700 leading-tight mb-1">
                       চান্দাইকোনা, রায়গঞ্জ, সিরাজগঞ্জ
@@ -477,9 +634,9 @@ function StudentIdCardsPage() {
                       <span className="font-medium flex-1" style={{wordBreak: 'keep-all', overflowWrap: 'normal'}}>{student.rollNumber || '০১'}</span>
                     </div>
                     <div className="flex items-center">
-                      <span className="text-gray-600 w-20 flex-shrink-0">পিতার নামঃ</span>
-                      <span className="text-gray-600 mr-1">:</span>
-                      <span className="font-medium flex-1" style={{wordBreak: 'keep-all', overflowWrap: 'normal'}}>{student.guardianName || 'মোঃ জামাল উদ্দিন'}</span>
+                      <span className="text-gray-600 w-20 flex-shrink-0 text-xs">পিতার নাম</span>
+                      <span className="text-gray-600 mr-1 text-xs">:</span>
+                      <span className="font-medium flex-1 text-xs whitespace-nowrap overflow-hidden text-ellipsis" style={{wordBreak: 'keep-all', overflowWrap: 'normal'}}>{student.guardianName || 'মোঃ জামাল উদ্দিন'}</span>
                     </div>
                     <div className="flex items-center">
                       <span className="text-gray-600 w-20 flex-shrink-0">শিক্ষাবর্ষ</span>
@@ -511,6 +668,7 @@ function StudentIdCardsPage() {
 
                 {/* Back Side */}
                 <div
+                  id={`id-card-back-${student.uid}`}
                   className="bg-white border-2 border-gray-300 overflow-hidden relative print:shadow-none"
                   style={{
                     width: '240px',
@@ -521,7 +679,7 @@ function StudentIdCardsPage() {
                   {/* School Information Header */}
                   <div className="p-3 text-center bg-white">
                     <h2 className="font-bold text-base text-blue-900 leading-tight mb-1">
-                      আমার স্কুল নুরানী একাডেমী
+                      ইকরা নূরানী একাডেমি
                     </h2>
                     <p className="text-xs text-gray-700 leading-tight mb-1">
                       চান্দাইকোনা, রায়গঞ্জ, সিরাজগঞ্জ

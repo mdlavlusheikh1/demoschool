@@ -93,7 +93,7 @@ const Modal: React.FC<ModalProps> = ({
           )}
 
           {/* Body */}
-          <div className={`p-6 overflow-y-auto ${footer ? 'max-h-[calc(90vh-140px)]' : 'max-h-[calc(90vh-80px)]'} ${bodyClassName}`}>
+          <div className={`p-6 overflow-y-auto ${footer ? 'max-h-[calc(90vh-180px)]' : 'max-h-[calc(90vh-80px)]'} ${bodyClassName}`}>
             {children}
           </div>
 

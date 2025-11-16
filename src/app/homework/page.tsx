@@ -3,6 +3,9 @@
 import { useState, useEffect } from 'react';
 import Navigation from '@/components/Navigation';
 import { BookOpen, Calendar, Clock, User, FileText, Download, Search, Filter, ChevronDown, ChevronUp, Eye, CheckCircle, AlertCircle } from 'lucide-react';
+import { settingsQueries, SystemSettings } from '@/lib/database-queries';
+import { db } from '@/lib/firebase';
+import { collection, query, orderBy, getDocs, Timestamp, where, limit } from 'firebase/firestore';
 
 interface Homework {
   id: string;
@@ -31,8 +34,93 @@ const PublicHomeworkPage = () => {
   const [sortBy, setSortBy] = useState<'dueDate' | 'priority' | 'createdAt'>('dueDate');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [expandedHomework, setExpandedHomework] = useState<string | null>(null);
+  const [generalSettings, setGeneralSettings] = useState<SystemSettings | null>(null);
 
-  // Sample data - in real app, this would come from API
+  // Load settings once (optimized for public page)
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const data = await settingsQueries.getSettings();
+        setGeneralSettings(data);
+      } catch (error) {
+        console.error('Error loading settings:', error);
+      }
+    };
+
+    loadSettings();
+  }, []);
+
+  // Load homeworks once (optimized for public page)
+  useEffect(() => {
+    const loadHomeworks = async () => {
+      try {
+        setLoading(true);
+        // Try to use optimized query with limit
+        let q;
+        try {
+          q = query(
+            collection(db, 'homeworks'),
+            where('status', '==', 'active'),
+            orderBy('createdAt', 'desc'),
+            limit(50) // Limit to 50 most recent homeworks
+          );
+        } catch (e) {
+          // If query fails (missing index), use simple query
+          q = query(collection(db, 'homeworks'), orderBy('createdAt', 'desc'), limit(50));
+        }
+        
+        const snapshot = await getDocs(q);
+        const homeworksData: Homework[] = [];
+        
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          // Only show active homeworks on public page
+          if (data.status === 'active') {
+            homeworksData.push({
+              id: docSnap.id,
+              title: data.title || '',
+              description: data.description || '',
+              subject: data.subject || '',
+              class: data.class || '',
+              teacher: data.teacherName || data.teacher || 'Unknown Teacher',
+              teacherName: data.teacherName || data.teacher,
+              dueDate: data.dueDate || '',
+              dueTime: data.dueTime || '',
+              priority: data.priority || 'medium',
+              status: 'pending', // For display purposes on public page
+              attachments: data.attachments || [],
+              instructions: data.instructions || '',
+              createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : new Date().toISOString()
+            });
+          }
+        });
+
+        setHomeworks(homeworksData);
+        setFilteredHomeworks(homeworksData);
+      } catch (error) {
+        console.error('Error loading homeworks:', error);
+        setHomeworks([]);
+        setFilteredHomeworks([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadHomeworks();
+  }, []);
+
+  // Get unique classes and subjects from loaded homeworks dynamically
+  const getUniqueValues = (key: 'class' | 'subject') => {
+    const values = new Set(homeworks.map(hw => hw[key]).filter(Boolean));
+    return Array.from(values).sort();
+  };
+
+  // Get unique classes and subjects from loaded homeworks dynamically
+  const allClasses = ['সকল ক্লাস', ...getUniqueValues('class')];
+  const allSubjects = ['সকল বিষয়', ...getUniqueValues('subject')];
+  const statuses = ['সকল অবস্থা', 'pending', 'completed', 'overdue'];
+
+  // Sample data - fallback if no data in Firebase (not used anymore, kept for reference)
   const sampleHomeworks: Homework[] = [
     {
       id: '1',
@@ -110,26 +198,6 @@ const PublicHomeworkPage = () => {
       createdAt: '2024-12-19'
     }
   ];
-
-  const classes = ['সকল ক্লাস', '৮ম শ্রেণি', '৯ম শ্রেণি', '১০ম শ্রেণি', '১১ম শ্রেণি', '১২ম শ্রেণি'];
-  const subjects = ['সকল বিষয়', 'গণিত', 'ইংরেজি', 'বিজ্ঞান', 'বাংলা', 'ইতিহাস', 'ভূগোল', 'ধর্ম'];
-  const statuses = ['সকল অবস্থা', 'pending', 'completed', 'overdue'];
-
-  useEffect(() => {
-    // Simulate API call
-    try {
-      setTimeout(() => {
-        setHomeworks(sampleHomeworks || []);
-        setFilteredHomeworks(sampleHomeworks || []);
-        setLoading(false);
-      }, 1000);
-    } catch (error) {
-      console.error('Error loading homeworks:', error);
-      setHomeworks([]);
-      setFilteredHomeworks([]);
-      setLoading(false);
-    }
-  }, []);
 
   useEffect(() => {
     try {
@@ -313,7 +381,7 @@ const PublicHomeworkPage = () => {
                 onChange={(e) => setSelectedClass(e.target.value)}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                {classes.map((cls) => (
+                {allClasses.map((cls) => (
                   <option key={cls} value={cls === 'সকল ক্লাস' ? '' : cls}>
                     {cls}
                   </option>
@@ -328,7 +396,7 @@ const PublicHomeworkPage = () => {
                 onChange={(e) => setSelectedSubject(e.target.value)}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                {subjects.map((subject) => (
+                {allSubjects.map((subject) => (
                   <option key={subject} value={subject === 'সকল বিষয়' ? '' : subject}>
                     {subject}
                   </option>
@@ -483,12 +551,12 @@ const PublicHomeworkPage = () => {
                 <span className="text-white font-bold text-lg">ই</span>
               </div>
             </div>
-            <h3 className="text-xl font-bold mb-2">আমার স্কুল</h3>
-            <p className="text-gray-400 mb-4">ভালোবাসা দিয়ে শিক্ষা, ইসলামিক মূল্যবোধে জীবন গড়া</p>
+            <h3 className="text-xl font-bold mb-2">{generalSettings?.schoolName || 'আমার স্কুল'}</h3>
+            <p className="text-gray-400 mb-4">{generalSettings?.schoolDescription || 'ভালোবাসা দিয়ে শিক্ষা, ইসলামিক মূল্যবোধে জীবন গড়া'}</p>
             <div className="flex justify-center space-x-6 text-sm text-gray-400">
-              <span>📞 +৮৮০ ১৭১১ ২৩৪৫৬৭</span>
-              <span>✉️ info@iqraschool.edu</span>
-              <span>📍 ঢাকা, বাংলাদেশ</span>
+              <span>📞 {generalSettings?.schoolPhone || '+৮৮০ ১৭১১ ২৩৪৫৬৭'}</span>
+              <span>✉️ {generalSettings?.schoolEmail || 'info@iqraschool.edu'}</span>
+              <span>📍 {generalSettings?.schoolAddress || 'ঢাকা, বাংলাদেশ'}</span>
             </div>
           </div>
         </div>

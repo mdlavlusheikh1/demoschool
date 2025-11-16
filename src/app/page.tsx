@@ -4,15 +4,27 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import Navigation from '@/components/Navigation';
-import { Brain, Phone, Mail, MapPin, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Phone, Mail, MapPin, ChevronLeft, ChevronRight, AlertTriangle, AlertCircle, Info } from 'lucide-react';
+import { settingsQueries, SystemSettings, studentQueries } from '@/lib/database-queries';
+import { db } from '@/lib/firebase';
+import { collection, query, orderBy, where, Timestamp, getDocs, limit, onSnapshot, doc, getDoc } from 'firebase/firestore';
 
 export default function HomePage() {
   const { userData } = useAuth();
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
   const [currentHeroSlide, setCurrentHeroSlide] = useState(0);
-
-  const heroSlides = [
+  const [heroSlides, setHeroSlides] = useState<Array<{
+    id: number | string;
+    title: string;
+    subtitle: string;
+    bgGradient: string;
+    aiText: string;
+    aiSubtext: string;
+    imageUrl?: string;
+    order?: number;
+    isActive?: boolean;
+  }>>([
     {
       id: 1,
       title: "আমার স্কুল",
@@ -37,7 +49,73 @@ export default function HomePage() {
       aiText: "DB",
       aiSubtext: "Real-time Reports"
     }
-  ];
+  ]);
+  const [notices, setNotices] = useState<Array<{
+    id: string;
+    title: string;
+    priority: 'high' | 'medium' | 'low';
+    category: string;
+    createdAt?: Timestamp;
+  }>>([]);
+  const [admissionContent, setAdmissionContent] = useState({
+    title: 'ভর্তি চলছে সেশন ২০২৪',
+    applyNow: '🎓 আবেদন করুন এখনই',
+    classes: '৭ম-১০ম',
+    classesLabel: 'শ্রেণী সমূহ',
+    open: 'খোলা',
+    openLabel: 'আবেদন প্রক্রিয়া',
+    deadline: 'আবেদনের শেষ তারিখ: ৩০ ডিসেম্বর ২০২৪',
+    admitNow: 'এখনই ভর্তি হন',
+    officeHours: '০৮:০০ - ১৫:০০',
+    contactPhone: '০১৭৮৮-৮৮৮৮',
+    experience: '১৫ বছর',
+    enabled: true
+  });
+  const [generalSettings, setGeneralSettings] = useState<SystemSettings | null>(null);
+  const [topStudents, setTopStudents] = useState<Array<{
+    id: string;
+    name: string;
+    className: string;
+    achievement?: string;
+    photoUrl?: string;
+    isActive: boolean;
+    order: number;
+    studentId?: string;
+    uid?: string;
+    section?: string;
+    group?: string;
+  }>>([]);
+  const [topStudentsEnabled, setTopStudentsEnabled] = useState(true);
+  const [topStudentsTitle, setTopStudentsTitle] = useState('কৃতি');
+  const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
+  const [links, setLinks] = useState<Array<{
+    id: string;
+    title: string;
+    url: string;
+    isActive: boolean;
+    order: number;
+  }>>([]);
+  const [linksEnabled, setLinksEnabled] = useState(true);
+  const [linksTitle, setLinksTitle] = useState('লিঙ্ক');
+  const [message, setMessage] = useState<{
+    author: string;
+    authorTitle: string;
+    message: string;
+    photoUrl?: string;
+  } | null>(null);
+  const [messageEnabled, setMessageEnabled] = useState(true);
+  const [messageTitle, setMessageTitle] = useState('বানী');
+  const [testimonials, setTestimonials] = useState<Array<{
+    id: string;
+    name: string;
+    designation: string;
+    message: string;
+    photoUrl?: string;
+    isActive: boolean;
+    order: number;
+  }>>([]);
+  const [testimonialsEnabled, setTestimonialsEnabled] = useState(true);
+  const [testimonialsTitle, setTestimonialsTitle] = useState('মতামত');
 
   const nextHeroSlide = () => {
     setCurrentHeroSlide((prev) => (prev + 1) % heroSlides.length);
@@ -51,12 +129,414 @@ export default function HomePage() {
     setCurrentHeroSlide(index);
   };
 
+  // Load notices once (optimized for public page)
+  // Real-time listener for notices
   useEffect(() => {
-    setIsLoading(false);
-  }, [userData]);
+    let unsubscribe: (() => void) | null = null;
+
+    try {
+      // Real-time listener for active notices
+      const noticesQuery = query(
+        collection(db, 'notices'),
+        where('status', '==', 'active'),
+        orderBy('createdAt', 'desc'),
+        limit(20) // Limit to 20 most recent notices
+      );
+
+      unsubscribe = onSnapshot(
+        noticesQuery,
+        (snapshot) => {
+          const noticesData: Array<{
+            id: string;
+            title: string;
+            priority: 'high' | 'medium' | 'low';
+            category: string;
+            expiresAt?: Timestamp;
+            createdAt?: Timestamp;
+          }> = [];
+
+          const now = new Date();
+          snapshot.forEach((docSnap) => {
+            try {
+              const data = docSnap.data();
+              
+              // Check if notice has expired
+              let isExpired = false;
+              if (data.expiresAt) {
+                try {
+                  const expiresAt = data.expiresAt.toDate ? data.expiresAt.toDate() : new Date(data.expiresAt);
+                  isExpired = expiresAt < now;
+                } catch (e) {
+                  console.warn('Error parsing expiresAt:', e);
+                }
+              }
+
+              if (!isExpired) {
+                noticesData.push({
+                  id: docSnap.id,
+                  title: data.title || '',
+                  priority: (data.priority || 'medium') as 'high' | 'medium' | 'low',
+                  category: data.category || 'all',
+                  expiresAt: data.expiresAt,
+                  createdAt: data.createdAt,
+                });
+              }
+            } catch (error) {
+              console.error('Error processing notice document:', error, docSnap.id);
+            }
+          });
+
+          // Sort by priority (high first) then by date (newest first)
+          noticesData.sort((a, b) => {
+            const priorityOrder = { high: 3, medium: 2, low: 1 };
+            const priorityDiff = (priorityOrder[b.priority] || 0) - (priorityOrder[a.priority] || 0);
+            if (priorityDiff !== 0) return priorityDiff;
+            
+            try {
+              const dateA = a.createdAt?.toMillis?.() || 0;
+              const dateB = b.createdAt?.toMillis?.() || 0;
+              return dateB - dateA;
+            } catch (e) {
+              return 0;
+            }
+          });
+
+          setNotices(noticesData);
+        },
+        (error) => {
+          console.error('Home page: Error in notices listener:', error);
+          // If query fails (e.g., missing index), try simple query without filters
+          try {
+            const simpleQuery = query(collection(db, 'notices'), limit(20));
+            const fallbackUnsubscribe = onSnapshot(
+              simpleQuery,
+              (snapshot) => {
+                const noticesData: Array<{
+                  id: string;
+                  title: string;
+                  priority: 'high' | 'medium' | 'low';
+                  category: string;
+                  expiresAt?: Timestamp;
+                  createdAt?: Timestamp;
+                }> = [];
+
+                const now = new Date();
+                snapshot.forEach((docSnap) => {
+                  const data = docSnap.data();
+                  if (data.status === 'active') {
+                    let isExpired = false;
+                    if (data.expiresAt) {
+                      try {
+                        const expiresAt = data.expiresAt.toDate ? data.expiresAt.toDate() : new Date(data.expiresAt);
+                        isExpired = expiresAt < now;
+                      } catch (e) {
+                        // Ignore errors
+                      }
+                    }
+                    if (!isExpired) {
+                      noticesData.push({
+                        id: docSnap.id,
+                        title: data.title || '',
+                        priority: (data.priority || 'medium') as 'high' | 'medium' | 'low',
+                        category: data.category || 'all',
+                        expiresAt: data.expiresAt,
+                        createdAt: data.createdAt,
+                      });
+                    }
+                  }
+                });
+                setNotices(noticesData);
+              },
+              (fallbackError) => {
+                console.error('Home page: Fallback query also failed:', fallbackError);
+                setNotices([]);
+              }
+            );
+            unsubscribe = fallbackUnsubscribe;
+          } catch (fallbackError) {
+            console.error('Home page: Error setting up fallback listener:', fallbackError);
+            setNotices([]);
+          }
+        }
+      );
+    } catch (error) {
+      console.error('Home page: Error setting up notices listener:', error);
+      setNotices([]);
+    }
+
+    // Cleanup function
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, []);
+
+  // Real-time listener for settings
+  useEffect(() => {
+    setIsLoading(true);
+    const settingsDocRef = doc(db, 'system', 'settings');
+    
+    const unsubscribe = onSnapshot(
+      settingsDocRef,
+      async (docSnap) => {
+        try {
+          let settings: SystemSettings | null = null;
+          
+          if (docSnap.exists()) {
+            settings = { id: docSnap.id, ...docSnap.data() } as SystemSettings;
+          } else {
+            // Return default settings if none exist
+            settings = await settingsQueries.getSettings();
+          }
+          
+          if (settings) {
+          // Load slider slides
+          if (settings.homeSliderSlides && settings.homeSliderSlides.length > 0) {
+            const activeSlides = settings.homeSliderSlides
+              .filter((slide: any) => slide.isActive !== false)
+              .sort((a: any, b: any) => (a.order || 0) - (b.order || 0))
+              .map((slide: any) => ({
+                id: slide.id || slide.title || Math.random().toString(),
+                title: slide.title || '',
+                subtitle: slide.subtitle || '',
+                bgGradient: slide.bgGradient || 'from-blue-900 via-purple-900 to-teal-800',
+                aiText: slide.aiText || '',
+                aiSubtext: slide.aiSubtext || '',
+                imageUrl: slide.imageUrl,
+                order: slide.order,
+                isActive: slide.isActive
+              }));
+            if (activeSlides.length > 0) {
+              setHeroSlides(activeSlides);
+            }
+          }
+
+          // Load admission content
+          if (settings.homeAdmissionEnabled !== undefined) {
+            setAdmissionContent({
+              title: settings.homeAdmissionTitle || admissionContent.title,
+              applyNow: settings.homeAdmissionApplyNow || admissionContent.applyNow,
+              classes: settings.homeAdmissionClasses || admissionContent.classes,
+              classesLabel: settings.homeAdmissionClassesLabel || admissionContent.classesLabel,
+              open: settings.homeAdmissionOpen || admissionContent.open,
+              openLabel: settings.homeAdmissionOpenLabel || admissionContent.openLabel,
+              deadline: settings.homeAdmissionDeadline || admissionContent.deadline,
+              admitNow: settings.homeAdmissionAdmitNow || admissionContent.admitNow,
+              officeHours: settings.homeAdmissionOfficeHours || admissionContent.officeHours,
+              contactPhone: settings.homeAdmissionContactPhone || admissionContent.contactPhone,
+              experience: settings.homeAdmissionExperience || admissionContent.experience,
+              enabled: settings.homeAdmissionEnabled
+            });
+          }
+
+          // Load general settings for footer
+          setGeneralSettings(settings);
+
+          // Load top students (কৃতি)
+          if ((settings as any).homeTopStudentsEnabled !== undefined) {
+            setTopStudentsEnabled((settings as any).homeTopStudentsEnabled);
+          }
+          if ((settings as any).homeTopStudentsTitle) {
+            setTopStudentsTitle((settings as any).homeTopStudentsTitle);
+          }
+          if ((settings as any).homeTopStudents && Array.isArray((settings as any).homeTopStudents)) {
+            const activeStudents = (settings as any).homeTopStudents
+              .filter((student: any) => student.isActive !== false)
+              .sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+            
+            // First set the students from settings (will show manual data if no uid/studentId)
+            setTopStudents(activeStudents);
+            
+            // Then fetch real student data if uid or studentId exists (async, will update later)
+            const loadRealStudentData = async (students: Array<{
+              id: string;
+              name: string;
+              className: string;
+              achievement?: string;
+              photoUrl?: string;
+              isActive: boolean;
+              order: number;
+              studentId?: string;
+              uid?: string;
+            }>) => {
+              try {
+                const studentsWithRealData = await Promise.all(
+                  students.map(async (student) => {
+                    // If student has uid or studentId, fetch real data
+                    if (student.uid || student.studentId) {
+                      try {
+                        let realStudent = null;
+                        if (student.uid) {
+                          realStudent = await studentQueries.getStudentById(student.uid);
+                        } else if (student.studentId) {
+                          realStudent = await studentQueries.getStudentByStudentId(student.studentId);
+                        }
+
+                        if (realStudent) {
+                          // Build class name with section and group
+                          let className = realStudent.class || '';
+                          const section = realStudent.section || '';
+                          const group = realStudent.group || '';
+                          
+                          // Format: "Class (Section) - Group" or just "Class" if no section/group
+                          if (className) {
+                            if (section && !className.includes(section)) {
+                              className += ` (${section})`;
+                            }
+                            if (group && !className.includes(group)) {
+                              className += ` - ${group}`;
+                            }
+                          } else {
+                            // If no class name, use the one from settings as fallback
+                            className = student.className || '';
+                          }
+
+                          return {
+                            ...student,
+                            name: realStudent.name || realStudent.displayName || student.name,
+                            className: className || student.className || '',
+                            section: section,
+                            group: group,
+                            photoUrl: realStudent.profileImage || student.photoUrl || '',
+                            // Keep achievement from settings if exists
+                            achievement: student.achievement || ''
+                          };
+                        }
+                      } catch (error) {
+                        console.error(`Error loading student data for ${student.uid || student.studentId}:`, error);
+                      }
+                    }
+                    // Return original student data if no uid/studentId or fetch failed
+                    return student;
+                  })
+                );
+
+                setTopStudents(studentsWithRealData);
+              } catch (error) {
+                console.error('Error loading real student data:', error);
+                // Fallback to original students data
+                setTopStudents(students);
+              }
+            };
+
+            if (activeStudents.some((s: any) => s.uid || s.studentId)) {
+              loadRealStudentData(activeStudents);
+            }
+          }
+
+          // Load links (লিঙ্ক)
+          if ((settings as any).homeLinksEnabled !== undefined) {
+            setLinksEnabled((settings as any).homeLinksEnabled);
+          }
+          if ((settings as any).homeLinksTitle) {
+            setLinksTitle((settings as any).homeLinksTitle);
+          }
+          if ((settings as any).homeLinks && Array.isArray((settings as any).homeLinks)) {
+            const activeLinks = (settings as any).homeLinks
+              .filter((link: any) => link.isActive !== false)
+              .sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+            setLinks(activeLinks);
+          }
+
+          // Load message (বানী)
+          if ((settings as any).homeMessageEnabled !== undefined) {
+            setMessageEnabled((settings as any).homeMessageEnabled);
+          }
+          if ((settings as any).homeMessageTitle) {
+            setMessageTitle((settings as any).homeMessageTitle);
+          }
+          if ((settings as any).homeMessage) {
+            setMessage((settings as any).homeMessage);
+          }
+
+          // Load testimonials (মতামত)
+          if ((settings as any).homeTestimonialsEnabled !== undefined) {
+            setTestimonialsEnabled((settings as any).homeTestimonialsEnabled);
+          } else {
+            // Default to true if not set
+            setTestimonialsEnabled(true);
+          }
+          if ((settings as any).homeTestimonialsTitle) {
+            setTestimonialsTitle((settings as any).homeTestimonialsTitle);
+          }
+          if ((settings as any).homeTestimonials && Array.isArray((settings as any).homeTestimonials)) {
+            const allTestimonials = (settings as any).homeTestimonials;
+            const activeTestimonials = allTestimonials
+              .filter((t: any) => {
+                // Only show active and approved testimonials with a valid message
+                // If isApproved is undefined (old testimonials), treat as approved for backward compatibility
+                if (!t || typeof t !== 'object') {
+                  return false;
+                }
+                
+                const hasValidMessage = t.message && typeof t.message === 'string' && t.message.trim().length > 0;
+                const isActive = t.isActive !== false;
+                const isApproved = t.isApproved === true || t.isApproved === undefined;
+                const hasValidName = t.name && typeof t.name === 'string' && t.name.trim().length > 0;
+                const shouldShow = isActive && isApproved && hasValidMessage && hasValidName;
+                
+                // Debug logging
+                if (!shouldShow) {
+                  console.log('Testimonial filtered out:', {
+                    id: t.id,
+                    name: t.name,
+                    isActive,
+                    isApproved,
+                    hasValidMessage,
+                    hasValidName,
+                    message: t.message
+                  });
+                }
+                
+                return shouldShow;
+              })
+              .map((t: any) => ({
+                id: t.id || `testimonial-${Date.now()}-${Math.random()}`,
+                name: t.name || 'অভিভাবক',
+                designation: t.designation || 'অভিভাবক',
+                message: t.message || '',
+                photoUrl: t.photoUrl || '',
+                isActive: t.isActive !== false,
+                order: t.order || 0
+              }))
+              .sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+            
+            console.log('Testimonials loaded:', {
+              total: allTestimonials.length,
+              active: activeTestimonials.length,
+              enabled: testimonialsEnabled
+            });
+            
+            setTestimonials(activeTestimonials);
+          } else {
+            // If no testimonials in settings, clear the list
+            console.log('No testimonials in settings');
+            setTestimonials([]);
+          }
+
+          }
+        } catch (error) {
+          console.error('Error processing settings:', error);
+        } finally {
+          setIsLoading(false);
+        }
+      },
+      (error) => {
+        console.error('Error in settings listener:', error);
+        setIsLoading(false);
+      }
+    );
+
+    // Cleanup function
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   // Auto-slide functionality for hero
   useEffect(() => {
+    if (heroSlides.length === 0) return;
     const heroInterval = setInterval(() => {
       setCurrentHeroSlide((prev) => (prev + 1) % heroSlides.length);
     }, 6000); // Change hero slide every 6 seconds
@@ -65,14 +545,25 @@ export default function HomePage() {
   }, [heroSlides.length]);
 
 
+  // Get priority icon
+  const getPriorityIcon = (priority: string) => {
+    switch (priority) {
+      case 'high':
+        return <AlertTriangle className="w-4 h-4 text-red-600" />;
+      case 'medium':
+        return <AlertCircle className="w-4 h-4 text-yellow-600" />;
+      case 'low':
+        return <Info className="w-4 h-4 text-green-600" />;
+      default:
+        return <AlertCircle className="w-4 h-4 text-blue-600" />;
+    }
+  };
+
   // Content for home page specific sections
   const content = {
     notice: {
       badge: 'নোটিশ',
-      text: '🔴 জরুরি: ভর্তির শেষ তারিখ ৩০ ডিসেম্বর ২০২৪ • 📢 নতুন: অনলাইন ক্লাস শুরু হবে ১৫ জানুয়ারি • ⚠️ সাবধান: জাল সার্টিফিকেট সম্পর্কে সতর্ক থাকুন • 📅 পরীক্ষার সময়সূচী প্রকাশিত হয়েছে • 🎓 বৃত্তি আবেদনের শেষ সময় ২০ ডিসেম্বর'
-    },
-    hero: {
-      adminPanel: 'অ্যাডমিন প্যানেল'
+      notices: notices
     },
     aboutUs: {
       title: 'আমাদের সম্পর্কে',
@@ -80,16 +571,7 @@ export default function HomePage() {
       description2: 'আমাদের লক্ষ্য হচ্ছে শিক্ষার্থীদের নৈতিকতা, চরিত্র গঠন এবং আধুনিক জ্ঞানে দক্ষ করে গড়ে তোলা। আমরা বিশ্বাস করি প্রতিটি শিক্ষার্থী অসীম সম্ভাবনার অধিকারী।',
       readMore: 'বিস্তারিত পড়ুন'
     },
-    admission: {
-      title: 'ভর্তি চলছে সেশন ২০২৪',
-      applyNow: '🎓 আবেদন করুন এখনই',
-      classes: '৭ম-১০ম',
-      classesLabel: 'শ্রেণী সমূহ',
-      open: 'খোলা',
-      openLabel: 'আবেদন প্রক্রিয়া',
-      deadline: 'আবেদনের শেষ তারিখ: ৩০ ডিসেম্বর ২০২৪',
-      admitNow: 'এখনই ভর্তি হন'
-    }
+    admission: admissionContent
   };
 
 
@@ -106,42 +588,67 @@ export default function HomePage() {
       {/* Navigation */}
       <Navigation />
 
-      {/* Notice Bar */}
-      <div className="bg-gray-100 text-black py-2 fixed w-full top-20 z-40 border-b border-gray-300">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center">
-            <div className="flex items-center mr-4">
-              <span className="bg-black text-white px-3 py-1 rounded-full text-xs font-bold animate-pulse">
-                {content.notice.badge}
-              </span>
-            </div>
-            <div className="flex-1 overflow-hidden">
-              <div className="animate-marquee whitespace-nowrap">
-                <span className="text-sm font-medium">
-                  {content.notice.text}
+      {/* Notice Bar - Real-time Scrolling Headline */}
+      {notices.length > 0 && (
+        <div className="bg-gray-100 text-black py-2 fixed w-full top-20 z-40 border-b border-gray-300">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center">
+              <div className="flex items-center mr-4 flex-shrink-0">
+                <span className="bg-black text-white px-3 py-1 rounded-full text-xs font-bold animate-pulse">
+                  {content.notice.badge}
                 </span>
+              </div>
+              <div className="flex-1 overflow-hidden relative">
+                <div 
+                  className="flex items-center space-x-8 animate-scroll-forever whitespace-nowrap"
+                  style={{
+                    animationDuration: `${notices.length * 8}s`,
+                  }}
+                >
+                  {/* Duplicate items for seamless loop */}
+                  {[...notices, ...notices].map((notice, index) => {
+                    try {
+                      const PriorityIcon = getPriorityIcon(notice.priority || 'medium');
+                      return (
+                        <div 
+                          key={`${notice.id}-${index}`}
+                          className="flex items-center space-x-2 flex-shrink-0"
+                        >
+                          {PriorityIcon}
+                          <span className="text-sm font-medium text-gray-900">
+                            {notice.title || 'নোটিশ'}
+                          </span>
+                          <span className="text-gray-400">•</span>
+                        </div>
+                      );
+                    } catch (error) {
+                      console.error('Error rendering notice in ticker:', error, notice);
+                      return null;
+                    }
+                  }).filter(Boolean)}
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
       <style jsx>{`
-        @keyframes marquee {
+        @keyframes scroll-forever {
           0% {
-            transform: translate3d(100%, 0, 0);
+            transform: translateX(0);
           }
           100% {
-            transform: translate3d(-100%, 0, 0);
+            transform: translateX(-50%);
           }
         }
-        .animate-marquee {
-          animation: marquee 30s linear infinite;
+        .animate-scroll-forever {
+          animation: scroll-forever linear infinite;
         }
       `}</style>
 
       {/* Hero Section - Now a Slider */}
-      <section className="pt-32 pb-16 text-white min-h-screen flex items-center relative overflow-hidden">
+      <section className={`pb-16 text-white min-h-screen flex items-center relative overflow-hidden ${notices.length > 0 ? 'pt-32' : 'pt-24'}`}>
         {/* Hero Slider Container */}
         <div className="absolute inset-0">
           <div 
@@ -149,8 +656,21 @@ export default function HomePage() {
             style={{ transform: `translateX(-${currentHeroSlide * 100}%)` }}
           >
             {heroSlides.map((slide) => (
-              <div key={slide.id} className={`w-full flex-shrink-0 bg-gradient-to-br ${slide.bgGradient} h-full`}>
-                <div className="absolute inset-0 bg-black/10"></div>
+              <div key={slide.id} className={`w-full flex-shrink-0 h-full relative`}>
+                {slide.imageUrl ? (
+                  <>
+                    <img 
+                      src={slide.imageUrl} 
+                      alt={slide.title}
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-black/40"></div>
+                  </>
+                ) : (
+                  <div className={`w-full h-full bg-gradient-to-br ${slide.bgGradient}`}>
+                    <div className="absolute inset-0 bg-black/10"></div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -169,31 +689,6 @@ export default function HomePage() {
               <p className="text-2xl text-blue-200 font-medium mb-8 transition-all duration-500">
                 {heroSlides[currentHeroSlide].subtitle}
               </p>
-            </div>
-            
-            {/* Dynamic AI Logo */}
-            <div className="flex justify-center mb-12">
-              <div className="w-64 h-64 rounded-full bg-gradient-to-br from-purple-600 via-blue-600 to-teal-500 flex items-center justify-center shadow-2xl transition-all duration-500 hover:scale-105">
-                <div className="text-center text-white">
-                  <Brain className="w-16 h-16 mx-auto mb-4 text-cyan-300" />
-                  <div className="text-4xl font-bold bg-gradient-to-r from-cyan-300 to-blue-300 bg-clip-text text-transparent mb-2 transition-all duration-500">
-                    {heroSlides[currentHeroSlide].aiText}
-                  </div>
-                  <div className="text-xl font-semibold transition-all duration-500">
-                    {heroSlides[currentHeroSlide].aiSubtext}
-                  </div>
-                </div>
-              </div>
-            </div>
-            
-            {/* Action Button */}
-            <div className="flex justify-center">
-              <button 
-                onClick={() => router.push('/auth/login')}
-                className="bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white px-10 py-4 rounded-lg text-xl font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-105"
-              >
-                {content.hero.adminPanel}
-              </button>
             </div>
           </div>
         </div>
@@ -267,150 +762,304 @@ export default function HomePage() {
               </div>
 
               {/* Admission Section - Much Bigger */}
-              <div className="bg-white rounded-2xl shadow-xl p-10">
-                <h2 className="text-3xl font-bold text-gray-900 mb-8 text-center">{content.admission.title}</h2>
-                <div className="text-center mb-10">
-                  <div className="inline-block bg-gradient-to-r from-green-500 to-blue-500 text-white px-10 py-5 rounded-full text-xl font-bold mb-6">
-                    {content.admission.applyNow}
-                  </div>
-                </div>
-                
-                <div className="space-y-8">
-                  <div className="grid grid-cols-2 gap-8">
-                    <div className="text-center p-6 bg-blue-50 rounded-2xl border-2 border-blue-200">
-                      <div className="text-4xl font-bold text-blue-600 mb-2">{content.admission.classes}</div>
-                      <div className="text-lg text-gray-700 font-semibold">{content.admission.classesLabel}</div>
-                    </div>
-                    <div className="text-center p-6 bg-green-50 rounded-2xl border-2 border-green-200">
-                      <div className="text-4xl font-bold text-green-600 mb-2">{content.admission.open}</div>
-                      <div className="text-lg text-gray-700 font-semibold">{content.admission.openLabel}</div>
+              {content.admission.enabled && (
+                <div className="bg-white rounded-2xl shadow-xl p-10">
+                  <h2 className="text-3xl font-bold text-gray-900 mb-8 text-center">{content.admission.title}</h2>
+                  <div className="text-center mb-10">
+                    <div className="inline-block bg-gradient-to-r from-green-500 to-blue-500 text-white px-10 py-5 rounded-full text-xl font-bold mb-6">
+                      {content.admission.applyNow}
                     </div>
                   </div>
                   
-                  <div className="text-center bg-yellow-50 p-6 rounded-2xl border-2 border-yellow-200">
-                    <p className="text-lg text-gray-700 mb-6 font-medium">{content.admission.deadline}</p>
-                    <button 
-                      onClick={() => router.push('/admission')}
-                      className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-10 py-4 rounded-2xl text-lg font-bold transition-all duration-300 transform hover:scale-110 shadow-lg"
-                    >
-                      {content.admission.admitNow}
-                    </button>
-                  </div>
-                  
-                  {/* Additional Information */}
-                  <div className="grid grid-cols-3 gap-6 mt-8">
-                    <div className="text-center p-4 bg-purple-50 rounded-xl">
-                      <div className="text-xl font-bold text-purple-600 mb-2">০৮:০০ - ১৫:০০</div>
-                      <div className="text-sm text-gray-600">অফিস সময়</div>
+                  <div className="space-y-8">
+                    <div className="grid grid-cols-2 gap-8">
+                      <div className="text-center p-6 bg-blue-50 rounded-2xl border-2 border-blue-200">
+                        <div className="text-4xl font-bold text-blue-600 mb-2">{content.admission.classes}</div>
+                        <div className="text-lg text-gray-700 font-semibold">{content.admission.classesLabel}</div>
+                      </div>
+                      <div className="text-center p-6 bg-green-50 rounded-2xl border-2 border-green-200">
+                        <div className="text-4xl font-bold text-green-600 mb-2">{content.admission.open}</div>
+                        <div className="text-lg text-gray-700 font-semibold">{content.admission.openLabel}</div>
+                      </div>
                     </div>
-                    <div className="text-center p-4 bg-indigo-50 rounded-xl">
-                      <div className="text-xl font-bold text-indigo-600 mb-2">০১৭৮৮-৮৮৮৮</div>
-                      <div className="text-sm text-gray-600">যোগাযোগ নম্বর</div>
+                    
+                    <div className="text-center bg-yellow-50 p-6 rounded-2xl border-2 border-yellow-200">
+                      <p className="text-lg text-gray-700 mb-6 font-medium">{content.admission.deadline}</p>
+                      <button 
+                        onClick={() => router.push('/admission')}
+                        className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-10 py-4 rounded-2xl text-lg font-bold transition-all duration-300 transform hover:scale-110 shadow-lg"
+                      >
+                        {content.admission.admitNow}
+                      </button>
                     </div>
-                    <div className="text-center p-4 bg-teal-50 rounded-xl">
-                      <div className="text-xl font-bold text-teal-600 mb-2">১৫ বছর</div>
-                      <div className="text-sm text-gray-600">শিক্ষার অভিজ্ঞতা</div>
+                    
+                    {/* Additional Information */}
+                    <div className="grid grid-cols-3 gap-6 mt-8">
+                      <div className="text-center p-4 bg-purple-50 rounded-xl">
+                        <div className="text-xl font-bold text-purple-600 mb-2">{content.admission.officeHours}</div>
+                        <div className="text-sm text-gray-600">অফিস সময়</div>
+                      </div>
+                      <div className="text-center p-4 bg-indigo-50 rounded-xl">
+                        <div className="text-xl font-bold text-indigo-600 mb-2">{content.admission.contactPhone}</div>
+                        <div className="text-sm text-gray-600">যোগাযোগ নম্বর</div>
+                      </div>
+                      <div className="text-center p-4 bg-teal-50 rounded-xl">
+                        <div className="text-xl font-bold text-teal-600 mb-2">{content.admission.experience}</div>
+                        <div className="text-sm text-gray-600">শিক্ষার অভিজ্ঞতা</div>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
+              )}
+
+              {/* Message Section (বানী) */}
+              {messageEnabled && message && (
+                <div className="bg-white rounded-xl shadow-lg p-6 mt-6">
+                  <h3 className="text-lg font-bold text-gray-900 mb-4">{messageTitle}</h3>
+                  <div className="flex flex-col md:flex-row gap-6">
+                    {message.photoUrl && (
+                      <div className="flex-shrink-0">
+                        <img
+                          src={message.photoUrl}
+                          alt={message.author}
+                          className="w-32 h-32 object-cover rounded-full border-4 border-blue-100"
+                        />
+                      </div>
+                    )}
+                    <div className="flex-1">
+                      <p className="text-gray-700 text-base leading-relaxed mb-4 italic">
+                        "{message.message}"
+                      </p>
+                      <div className="border-t pt-4">
+                        <p className="text-sm font-semibold text-gray-900">{message.author}</p>
+                        <p className="text-sm text-gray-600">{message.authorTitle}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Testimonials Section (মতামত) */}
+              {testimonialsEnabled && testimonials.length > 0 && (
+                <div className="bg-white rounded-xl shadow-lg p-4 mt-6">
+                  <h3 className="text-lg font-bold text-gray-900 mb-4">{testimonialsTitle}</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {testimonials.map((testimonial, index) => {
+                      // Safe access with fallbacks
+                      const testimonialId = testimonial?.id || `testimonial-${index}`;
+                      const testimonialName = testimonial?.name || 'অভিভাবক';
+                      const testimonialDesignation = testimonial?.designation || 'অভিভাবক';
+                      const testimonialMessage = testimonial?.message || '';
+                      const testimonialPhotoUrl = testimonial?.photoUrl;
+                      
+                      // Skip if no message
+                      if (!testimonialMessage || testimonialMessage.trim().length === 0) {
+                        return null;
+                      }
+                      
+                      const firstLetter = testimonialName ? testimonialName.charAt(0) : '?';
+                      const colors = ['bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-yellow-500', 'bg-red-500', 'bg-indigo-500'];
+                      const colorIndex = testimonialName ? testimonialName.charCodeAt(0) % colors.length : 0;
+                      const avatarColor = colors[colorIndex];
+
+                      return (
+                        <div key={testimonialId} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                          <div className="flex items-start space-x-3">
+                            {testimonialPhotoUrl && testimonialPhotoUrl.trim() ? (
+                              <img
+                                src={testimonialPhotoUrl}
+                                alt={testimonialName}
+                                className="w-12 h-12 rounded-full object-cover"
+                                onError={(e) => {
+                                  // Hide image on error
+                                  (e.target as HTMLImageElement).style.display = 'none';
+                                }}
+                              />
+                            ) : (
+                              <div className={`w-12 h-12 ${avatarColor} rounded-full flex items-center justify-center`}>
+                                <span className="text-white text-sm font-bold">{firstLetter}</span>
+                              </div>
+                            )}
+                            <div className="flex-1">
+                              <p className="text-sm text-gray-700 mb-2 italic">"{testimonialMessage}"</p>
+                              <p className="text-sm font-semibold text-gray-900">{testimonialName}</p>
+                              <p className="text-xs text-gray-600">{testimonialDesignation}</p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }).filter(Boolean)}
+                  </div>
+                </div>
+              )}
+
             </div>
 
             {/* Right Column - Bigger but still compact (1/4 width) */}
             <div className="lg:col-span-1 space-y-4">
-              {/* Notice Board - Bigger */}
+              {/* Notice Board - Bigger - Real-time */}
               <div className="bg-white rounded-xl shadow-lg p-4">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-lg font-bold text-gray-900">নোটিশ</h3>
                 </div>
                 
                 <div className="space-y-2">
-                  <div className="flex items-start p-2 hover:bg-gray-50 rounded-lg">
-                    <div className="w-6 h-6 bg-red-500 rounded-full flex items-center justify-center mr-3">
-                      <span className="text-white text-sm font-bold">⚠</span>
+                  {notices.length > 0 ? (
+                    notices.slice(0, 3).map((notice) => {
+                      try {
+                        const PriorityIcon = getPriorityIcon(notice.priority || 'medium');
+                        const priorityColors = {
+                          high: 'bg-red-500',
+                          medium: 'bg-yellow-500',
+                          low: 'bg-green-500'
+                        };
+
+                        // Get relative time helper
+                        const getRelativeTime = (timestamp: Timestamp | undefined): string => {
+                          if (!timestamp) return '';
+                          try {
+                            // Handle Firestore Timestamp
+                            let date: Date;
+                            if (timestamp && typeof timestamp === 'object' && 'toDate' in timestamp) {
+                              date = (timestamp as Timestamp).toDate();
+                            } else if (timestamp && Object.prototype.toString.call(timestamp) === '[object Date]') {
+                              date = timestamp as unknown as Date;
+                            } else {
+                              return '';
+                            }
+
+                            const now = new Date();
+                            const diffInMs = now.getTime() - date.getTime();
+                            const diffInDays = Math.floor(diffInMs / (1000 * 60 * 60 * 24));
+
+                            if (diffInDays === 0) return 'আজ';
+                            if (diffInDays === 1) return 'গতকাল';
+                            if (diffInDays < 7) return `${diffInDays} দিন আগে`;
+                            if (diffInDays < 30) return `${Math.floor(diffInDays / 7)} সপ্তাহ আগে`;
+                            if (diffInDays < 365) return `${Math.floor(diffInDays / 30)} মাস আগে`;
+                            return `${Math.floor(diffInDays / 365)} বছর আগে`;
+                          } catch (e) {
+                            console.warn('Error calculating relative time:', e);
+                            return '';
+                          }
+                        };
+
+                        const priorityKey = notice.priority || 'medium';
+                        const priorityColor = priorityColors[priorityKey as keyof typeof priorityColors] || 'bg-blue-500';
+
+                        return (
+                          <div key={notice.id} className="flex items-start p-2 hover:bg-gray-50 rounded-lg cursor-pointer" onClick={() => router.push('/notice')}>
+                            <div className={`w-6 h-6 ${priorityColor} rounded-full flex items-center justify-center mr-3 flex-shrink-0`}>
+                              {PriorityIcon}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-semibold text-gray-900 line-clamp-1">{notice.title || 'নোটিশ'}</div>
+                              <div className="text-xs text-gray-600">{getRelativeTime(notice.createdAt)}</div>
+                            </div>
+                          </div>
+                        );
+                      } catch (error) {
+                        console.error('Error rendering notice:', error, notice);
+                        return null;
+                      }
+                    }).filter(Boolean)
+                  ) : (
+                    <div className="text-center py-4">
+                      <div className="text-sm text-gray-500">কোনো নোটিশ নেই</div>
                     </div>
-                    <div className="flex-1">
-                      <div className="text-sm font-semibold text-gray-900">সাবধান ভূমি</div>
-                      <div className="text-sm text-gray-600">১৫ দিন আগো</div>
-                    </div>
-                  </div>
+                  )}
                 </div>
                 
                 <div className="mt-3 text-center">
-                  <span className="text-sm text-green-600 font-medium cursor-pointer hover:text-green-700">সব দেখুন</span>
+                  <span 
+                    onClick={() => router.push('/notice')}
+                    className="text-sm text-green-600 font-medium cursor-pointer hover:text-green-700"
+                  >
+                    সব দেখুন
+                  </span>
                 </div>
               </div>
 
               {/* Quick Links - Bigger */}
-              <div className="bg-white rounded-xl shadow-lg p-4">
-                <h3 className="text-lg font-bold text-gray-900 mb-3">লিঙ্ক</h3>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between p-2 hover:bg-gray-50 rounded-lg">
-                    <div className="flex items-center">
-                      <div className="w-4 h-4 bg-green-600 rounded mr-3"></div>
-                      <span className="text-sm font-medium">শিক্ষা মন্ত্রণালয়</span>
-                    </div>
-                    <span className="text-sm text-blue-600 font-medium">ভিজিট</span>
-                  </div>
-                  <div className="flex items-center justify-between p-2 hover:bg-gray-50 rounded-lg">
-                    <div className="flex items-center">
-                      <div className="w-4 h-4 bg-green-600 rounded mr-3"></div>
-                      <span className="text-sm font-medium">মাধ্যমিক বোর্ড</span>
-                    </div>
-                    <span className="text-sm text-blue-600 font-medium">ভিজিট</span>
-                  </div>
-                </div>
-              </div>
+              {linksEnabled && links.length > 0 && (
+                <div className="bg-white rounded-xl shadow-lg p-4">
+                  <h3 className="text-lg font-bold text-gray-900 mb-3">{linksTitle}</h3>
+                  <div className="space-y-2">
+                    {links.map((link) => {
+                      // Generate color based on link title for consistent icon color
+                      const colors = ['bg-green-600', 'bg-blue-600', 'bg-purple-600', 'bg-yellow-600', 'bg-red-600', 'bg-indigo-600'];
+                      const colorIndex = link.title ? link.title.charCodeAt(0) % colors.length : 0;
+                      const linkColor = colors[colorIndex];
 
-              {/* Statistics Grid - Bigger */}
-              <div className="grid grid-cols-1 gap-3">
-                <div className="bg-white rounded-lg shadow-lg p-4 text-center">
-                  <div className="text-3xl font-bold text-blue-600 mb-1">95</div>
-                  <div className="text-sm text-gray-600 font-medium">Seven</div>
+                      return (
+                        <a
+                          key={link.id}
+                          href={link.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center justify-between p-2 hover:bg-gray-50 rounded-lg transition-colors cursor-pointer"
+                        >
+                          <div className="flex items-center">
+                            <div className={`w-4 h-4 ${linkColor} rounded mr-3`}></div>
+                            <span className="text-sm font-medium text-gray-900">{link.title}</span>
+                          </div>
+                          <span className="text-sm text-blue-600 font-medium hover:text-blue-700">ভিজিট</span>
+                        </a>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div className="bg-white rounded-lg shadow-lg p-4 text-center">
-                  <div className="text-3xl font-bold text-blue-600 mb-1">80</div>
-                  <div className="text-sm text-gray-600 font-medium">Eight</div>
-                </div>
-                <div className="bg-white rounded-lg shadow-lg p-4 text-center">
-                  <div className="text-3xl font-bold text-blue-600 mb-1">160</div>
-                  <div className="text-sm text-gray-600 font-medium">Nine</div>
-                </div>
-                <div className="bg-white rounded-lg shadow-lg p-4 text-center">
-                  <div className="text-3xl font-bold text-blue-600 mb-1">110</div>
-                  <div className="text-sm text-gray-600 font-medium">Ten</div>
-                </div>
-              </div>
+              )}
 
               {/* Top Students - Bigger */}
-              <div className="bg-white rounded-xl shadow-lg p-4">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-bold text-gray-900">কৃতি</h3>
-                  <span className="text-sm text-green-600 font-medium">সব দেখুন</span>
-                </div>
-                
-                <div className="space-y-3">
-                  <div className="flex items-center">
-                    <div className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center mr-3">
-                      <span className="text-white text-sm font-bold">ত</span>
-                    </div>
-                    <div>
-                      <div className="text-sm font-semibold text-gray-900">তাসনিয়া আকতার</div>
-                      <div className="text-sm text-gray-600">ক্লাস টেন</div>
-                    </div>
+              {topStudentsEnabled && topStudents.length > 0 && (
+                <div className="bg-white rounded-xl shadow-lg p-4">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-bold text-gray-900">{topStudentsTitle}</h3>
+                    <span className="text-sm text-green-600 font-medium cursor-pointer hover:text-green-700">সব দেখুন</span>
                   </div>
                   
-                  <div className="flex items-center">
-                    <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center mr-3">
-                      <span className="text-white text-sm font-bold">ম</span>
-                    </div>
-                    <div>
-                      <div className="text-sm font-semibold text-gray-900">মাহজাবুল ইসলাম</div>
-                      <div className="text-sm text-gray-600">ক্লাস নাইন</div>
-                    </div>
+                  <div className="space-y-3">
+                    {topStudents.slice(0, 5).map((student) => {
+                      // Get first letter of name for avatar
+                      const firstLetter = student.name ? student.name.charAt(0) : '?';
+                      // Generate a color based on student name for consistent avatar color
+                      const colors = ['bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-yellow-500', 'bg-red-500', 'bg-indigo-500'];
+                      const colorIndex = student.name ? student.name.charCodeAt(0) % colors.length : 0;
+                      const avatarColor = colors[colorIndex];
+                      const hasImageError = imageErrors[student.id] || false;
+
+                      return (
+                        <div key={student.id} className="flex items-center">
+                          {student.photoUrl && !hasImageError ? (
+                            <img
+                              src={student.photoUrl}
+                              alt={student.name}
+                              className="w-10 h-10 rounded-full object-cover mr-3 border-2 border-gray-200"
+                              onError={() => {
+                                setImageErrors(prev => ({ ...prev, [student.id]: true }));
+                              }}
+                            />
+                          ) : (
+                            <div className={`w-10 h-10 ${avatarColor} rounded-full flex items-center justify-center mr-3`}>
+                              <span className="text-white text-sm font-bold">{firstLetter}</span>
+                            </div>
+                          )}
+                          <div className="flex-1">
+                            <div className="text-sm font-semibold text-gray-900">{student.name || 'নাম নেই'}</div>
+                            <div className="text-sm text-gray-600">
+                              {student.className || (student.uid || student.studentId ? 'ক্লাস লোড হচ্ছে...' : 'ক্লাস নেই')}
+                            </div>
+                            {student.achievement && (
+                              <div className="text-xs text-gray-500 mt-1">{student.achievement}</div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
-              </div>
+              )}
             </div>
 
 
@@ -423,8 +1072,8 @@ export default function HomePage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             <div className="space-y-4">
-              <h3 className="text-2xl font-bold mb-4">আমার স্কুল</h3>
-              <p className="text-gray-300 mb-6 leading-relaxed">আদর্শ শিক্ষা, আদর্শ মানুষ গড়ার কারিগর</p>
+              <h3 className="text-2xl font-bold mb-4">{generalSettings?.schoolName || 'আমার স্কুল'}</h3>
+              <p className="text-gray-300 mb-6 leading-relaxed">{generalSettings?.schoolDescription || 'আদর্শ শিক্ষা, আদর্শ মানুষ গড়ার কারিগর'}</p>
             </div>
             
             <div className="space-y-4">
@@ -432,22 +1081,22 @@ export default function HomePage() {
               <div className="text-gray-300 space-y-3">
                 <div className="flex items-center space-x-3">
                   <Phone className="w-5 h-5 flex-shrink-0" />
-                  <span>০১৭ ৮৮৮-৮৮৮৮</span>
+                  <span>{generalSettings?.schoolPhone || '০১৭ ৮৮৮-৮৮৮৮'}</span>
                 </div>
                 <div className="flex items-center space-x-3">
                   <Mail className="w-5 h-5 flex-shrink-0" />
-                  <span>info@iqraacademy.edu</span>
+                  <span>{generalSettings?.schoolEmail || 'info@iqraacademy.edu'}</span>
                 </div>
                 <div className="flex items-center space-x-3">
                   <MapPin className="w-5 h-5 flex-shrink-0" />
-                  <span>১৫৯ মেইন রোড, ঢাকা-১২০৭</span>
+                  <span>{generalSettings?.schoolAddress || '১৫৯ মেইন রোড, ঢাকা-১২০৭'}</span>
                 </div>
               </div>
             </div>
           </div>
           
           <div className="border-t border-gray-700 mt-8 pt-8 text-center text-gray-400">
-            <p>&copy; ২০২৪ আমার স্কুল। সর্বস্বত্ব সংরক্ষিত।</p>
+            <p>&copy; ২০২৪ {generalSettings?.schoolName || 'আমার স্কুল'}। সর্বস্বত্ব সংরক্ষিত।</p>
           </div>
         </div>
       </footer>

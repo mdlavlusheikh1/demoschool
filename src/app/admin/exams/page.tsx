@@ -6,11 +6,11 @@ import { auth } from '@/lib/firebase';
 import { User, onAuthStateChanged } from 'firebase/auth';
 import AdminLayout from '@/components/AdminLayout';
 import { examQueries } from '@/lib/database-queries';
-import { SCHOOL_ID } from '@/lib/constants';
+import { SCHOOL_ID, SCHOOL_NAME } from '@/lib/constants';
 import {
   Plus, Edit, Trash2, Eye, Clock, FileText, Award, BarChart3, Save,
   CheckCircle, XCircle, BookOpen as BookOpenIcon,
-  FileSpreadsheet, TrendingUp as TrendingUpIcon, Loader2, DollarSign
+  FileSpreadsheet, TrendingUp as TrendingUpIcon, Loader2, DollarSign, X
 } from 'lucide-react';
 
 interface Exam {
@@ -51,8 +51,13 @@ function ExamsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingExam, setEditingExam] = useState<Exam | null>(null);
+  const [showSuccessAlert, setShowSuccessAlert] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [showErrorAlert, setShowErrorAlert] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
   const router = useRouter();
   const schoolId = SCHOOL_ID;
+  const schoolName = SCHOOL_NAME;
 
   // State for add exam modal
   const [newExam, setNewExam] = useState({
@@ -76,10 +81,12 @@ function ExamsPage() {
     try {
       setLoading(true);
       const examsData = await examQueries.getAllExams(schoolId);
-      setExams(examsData);
+      setExams(examsData || []);
     } catch (error) {
       console.error('Error loading exams:', error);
-      alert('পরীক্ষা লোড করতে ত্রুটি হয়েছে।');
+      setErrorMessage('পরীক্ষা লোড করতে ত্রুটি হয়েছে।');
+      setShowErrorAlert(true);
+      setExams([]);
     } finally {
       setLoading(false);
     }
@@ -88,19 +95,27 @@ function ExamsPage() {
   // Real-time listener for exams
   useEffect(() => {
     if (user) {
-      const unsubscribe = examQueries.subscribeToExams(
-        schoolId,
-        (examsData) => {
-          setExams(examsData);
-        },
-        (error) => {
-          console.error('Real-time listener error:', error);
-        }
-      );
+      try {
+        const unsubscribe = examQueries.subscribeToExams(
+          schoolId,
+          (examsData) => {
+            setExams(examsData || []);
+          },
+          (error) => {
+            console.error('Real-time listener error:', error);
+            setExams([]);
+          }
+        );
 
-      return () => unsubscribe();
+        return () => {
+          if (unsubscribe) unsubscribe();
+        };
+      } catch (error) {
+        console.error('Error setting up real-time listener:', error);
+        setExams([]);
+      }
     }
-  }, [user]);
+  }, [user, schoolId]);
 
   // Authentication check
   useEffect(() => {
@@ -117,24 +132,39 @@ function ExamsPage() {
 
   // Toggle result publication
   const toggleResultPublication = async (examId: string, currentStatus: boolean) => {
+    if (!examId) {
+      setErrorMessage('পরীক্ষা আইডি পাওয়া যায়নি।');
+      setShowErrorAlert(true);
+      return;
+    }
     try {
       await examQueries.toggleResultPublication(examId, !currentStatus, user?.email || 'admin');
-      alert(currentStatus ? 'ফলাফল গোপন করা হয়েছে' : 'ফলাফল প্রকাশ করা হয়েছে');
+      setSuccessMessage(currentStatus ? 'ফলাফল গোপন করা হয়েছে' : 'ফলাফল প্রকাশ করা হয়েছে');
+      setShowSuccessAlert(true);
     } catch (error) {
       console.error('Error toggling result publication:', error);
-      alert('ফলাফল প্রকাশনা টগল করতে ত্রুটি হয়েছে।');
+      setErrorMessage('ফলাফল প্রকাশনা টগল করতে ত্রুটি হয়েছে।');
+      setShowErrorAlert(true);
     }
   };
 
   // Delete exam
   const handleDeleteExam = async (examId: string) => {
-    if (confirm('আপনি কি নিশ্চিত যে এই পরীক্ষা মুছে ফেলতে চান?')) {
+    if (!examId) {
+      setErrorMessage('পরীক্ষা আইডি পাওয়া যায়নি।');
+      setShowErrorAlert(true);
+      return;
+    }
+    const confirmed = window.confirm('আপনি কি নিশ্চিত যে এই পরীক্ষা মুছে ফেলতে চান?');
+    if (confirmed) {
       try {
         await examQueries.deleteExam(examId);
-        alert('পরীক্ষা সফলভাবে মুছে ফেলা হয়েছে');
+        setSuccessMessage('পরীক্ষা সফলভাবে মুছে ফেলা হয়েছে');
+        setShowSuccessAlert(true);
       } catch (error) {
         console.error('Error deleting exam:', error);
-        alert('পরীক্ষা মুছে ফেলতে ত্রুটি হয়েছে।');
+        setErrorMessage('পরীক্ষা মুছে ফেলতে ত্রুটি হয়েছে।');
+        setShowErrorAlert(true);
       }
     }
   };
@@ -142,7 +172,8 @@ function ExamsPage() {
   // Add new exam
   const handleAddExam = async () => {
     if (!newExam.name || !newExam.class || !newExam.subject || !newExam.startDate || !newExam.endDate) {
-      alert('অনুগ্রহ করে সকল তথ্য পূরণ করুন।');
+      setErrorMessage('অনুগ্রহ করে সকল তথ্য পূরণ করুন।');
+      setShowErrorAlert(true);
       return;
     }
 
@@ -160,6 +191,7 @@ function ExamsPage() {
         students: 0,
         status: 'সক্রিয়' as const,
         schoolId,
+        schoolName,
         createdBy: user?.email || 'admin',
         resultsPublished: false,
         allowResultView: false,
@@ -181,23 +213,31 @@ function ExamsPage() {
         description: ''
       });
       setShowAddModal(false);
-      alert(`নতুন পরীক্ষা "${newExam.name}" সফলভাবে যোগ করা হয়েছে।`);
+      setSuccessMessage(`নতুন পরীক্ষা "${newExam.name}" সফলভাবে যোগ করা হয়েছে।`);
+      setShowSuccessAlert(true);
     } catch (error) {
       console.error('Error creating exam:', error);
-      alert('পরীক্ষা তৈরি করতে ত্রুটি হয়েছে।');
+      setErrorMessage('পরীক্ষা তৈরি করতে ত্রুটি হয়েছে।');
+      setShowErrorAlert(true);
     }
   };
 
   // Filter exams based on search
-  const filteredExams = exams.filter(exam =>
-    exam.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    exam.class.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredExams = (exams || []).filter(exam =>
+    exam?.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    exam?.class?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   // Format date for display
   const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('bn-BD', { day: 'numeric', month: 'short', year: 'numeric' });
+    if (!dateString) return '-';
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) return dateString;
+      return date.toLocaleDateString('bn-BD', { day: 'numeric', month: 'short', year: 'numeric' });
+    } catch (error) {
+      return dateString;
+    }
   };
 
   if (loading) {
@@ -236,21 +276,21 @@ function ExamsPage() {
           </button>
         </div>
 
-        {/* Exam Fee Management */}
+        {/* Exam Management */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
           <div className="flex items-center justify-between mb-4">
             <div className="w-12 h-12 bg-emerald-100 rounded-lg flex items-center justify-center">
               <DollarSign className="w-6 h-6 text-emerald-600" />
             </div>
-            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">ফি</span>
+            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">পরীক্ষা</span>
           </div>
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">পরীক্ষার ফি ম্যানেজমেন্ট</h3>
-          <p className="text-gray-600 text-sm mb-4">পরীক্ষার ফি নির্ধারণ করুন এবং ক্লাস অনুযায়ী ফি ম্যানেজ করুন।</p>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">পরীক্ষার ম্যানেজমেন্ট</h3>
+          <p className="text-gray-600 text-sm mb-4">পরীক্ষা পরিকল্পনা ও ব্যবস্থাপনা পরিচালনা করুন।</p>
           <button
             onClick={() => router.push('/admin/exams/exam-fee-management')}
             className="w-full bg-emerald-600 text-white py-2 px-4 rounded-lg hover:bg-emerald-700 text-sm font-medium"
           >
-            ফি ম্যানেজ করুন
+            পরীক্ষা পরিচালনা করুন
           </button>
         </div>
 
@@ -301,8 +341,12 @@ function ExamsPage() {
           <h3 className="text-lg font-semibold text-gray-900 mb-2">মার্ক সংরক্ষণ করুন</h3>
           <p className="text-gray-600 text-sm mb-4">এন্ট্রি করা মার্ক সংরক্ষণ করুন এবং ব্যাকআপ নিন।</p>
           <button
-            onClick={() => router.push('/admin/exams/save-marks')}
-            className="w-full bg-teal-600 text-white py-2 px-4 rounded-lg hover:bg-teal-700 text-sm font-medium"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            disabled
+            className="w-full bg-gray-400 text-white py-2 px-4 rounded-lg cursor-not-allowed text-sm font-medium opacity-60"
           >
             মার্ক সংরক্ষণ করুন
           </button>
@@ -333,7 +377,7 @@ function ExamsPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">মোট পরীক্ষা</p>
-              <p className="text-2xl font-bold text-gray-900">{exams.length}</p>
+              <p className="text-2xl font-bold text-gray-900">{(exams || []).length}</p>
             </div>
             <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
               <BarChart3 className="w-4 h-4 text-blue-600" />
@@ -346,7 +390,7 @@ function ExamsPage() {
             <div>
               <p className="text-sm font-medium text-gray-600">সক্রিয় পরীক্ষা</p>
               <p className="text-2xl font-bold text-gray-900">
-                {exams.filter(exam => exam.status === 'সক্রিয়').length}
+                {(exams || []).filter(exam => exam?.status === 'সক্রিয়').length}
               </p>
             </div>
             <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
@@ -360,7 +404,7 @@ function ExamsPage() {
             <div>
               <p className="text-sm font-medium text-gray-600">সম্পন্ন পরীক্ষা</p>
               <p className="text-2xl font-bold text-gray-900">
-                {exams.filter(exam => exam.status === 'সম্পন্ন').length}
+                {(exams || []).filter(exam => exam?.status === 'সম্পন্ন').length}
               </p>
             </div>
             <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
@@ -374,7 +418,7 @@ function ExamsPage() {
             <div>
               <p className="text-sm font-medium text-gray-600">প্রকাশিত ফলাফল</p>
               <p className="text-2xl font-bold text-gray-900">
-                {exams.filter(exam => exam.resultsPublished).length}
+                {(exams || []).filter(exam => exam?.resultsPublished).length}
               </p>
             </div>
             <div className="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center">
@@ -435,71 +479,77 @@ function ExamsPage() {
                 </tr>
               ) : (
                 filteredExams.map((exam) => (
-                  <tr key={exam.id} className="hover:bg-gray-50">
+                  <tr key={exam?.id || Math.random()} className="hover:bg-gray-50">
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm font-medium text-gray-900">{exam.name}</div>
-                      <div className="text-xs text-gray-500">{exam.class} - {exam.subject}</div>
+                      <div className="text-sm font-medium text-gray-900">{exam?.name || '-'}</div>
+                      <div className="text-xs text-gray-500">{exam?.class || '-'} - {exam?.subject || '-'}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {formatDate(exam.startDate)}
+                      {formatDate(exam?.startDate || '')}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {formatDate(exam.endDate)}
+                      {formatDate(exam?.endDate || '')}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-center">
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        exam.status === 'সম্পন্ন' ? 'bg-green-100 text-green-800' :
-                        exam.status === 'সক্রিয়' ? 'bg-blue-100 text-blue-800' :
+                        exam?.status === 'সম্পন্ন' ? 'bg-green-100 text-green-800' :
+                        exam?.status === 'সক্রিয়' ? 'bg-blue-100 text-blue-800' :
                         'bg-gray-100 text-gray-800'
                       }`}>
-                        {exam.status}
+                        {exam?.status || '-'}
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-center">
-                      <button
-                        onClick={() => toggleResultPublication(exam.id!, exam.resultsPublished)}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-                          exam.resultsPublished ? 'bg-green-600' : 'bg-gray-300'
-                        }`}
-                        title={exam.resultsPublished ? 'ফলাফল প্রকাশিত' : 'ফলাফল গোপন'}
-                      >
-                        <span
-                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                            exam.resultsPublished ? 'translate-x-6' : 'translate-x-1'
-                          }`}
-                        />
-                      </button>
-                      {exam.resultsPublished && (
-                        <div className="text-xs text-green-600 mt-1 flex items-center justify-center">
-                          <CheckCircle className="w-3 h-3 mr-1" />
-                          প্রকাশিত
-                        </div>
+                      {exam?.id && (
+                        <>
+                          <button
+                            onClick={() => toggleResultPublication(exam.id!, exam?.resultsPublished || false)}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                              exam?.resultsPublished ? 'bg-green-600' : 'bg-gray-300'
+                            }`}
+                            title={exam?.resultsPublished ? 'ফলাফল প্রকাশিত' : 'ফলাফল গোপন'}
+                          >
+                            <span
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                exam?.resultsPublished ? 'translate-x-6' : 'translate-x-1'
+                              }`}
+                            />
+                          </button>
+                          {exam?.resultsPublished && (
+                            <div className="text-xs text-green-600 mt-1 flex items-center justify-center">
+                              <CheckCircle className="w-3 h-3 mr-1" />
+                              প্রকাশিত
+                            </div>
+                          )}
+                        </>
                       )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-center">
-                      <div className="flex items-center justify-center space-x-2">
-                        <button
-                          onClick={() => router.push(`/admin/exams/results?examId=${exam.id}`)}
-                          className="p-1 text-gray-400 hover:text-green-600"
-                          title="ফলাফল দেখুন"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => setEditingExam(exam)}
-                          className="p-1 text-gray-400 hover:text-blue-600"
-                          title="সম্পাদনা করুন"
-                        >
-                          <Edit className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteExam(exam.id!)}
-                          className="p-1 text-gray-400 hover:text-red-600"
-                          title="মুছে ফেলুন"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
+                      {exam?.id && (
+                        <div className="flex items-center justify-center space-x-2">
+                          <button
+                            onClick={() => exam.id && router.push(`/admin/exams/results?examId=${exam.id}`)}
+                            className="p-1 text-gray-400 hover:text-green-600"
+                            title="ফলাফল দেখুন"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setEditingExam(exam)}
+                            className="p-1 text-gray-400 hover:text-blue-600"
+                            title="সম্পাদনা করুন"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => exam.id && handleDeleteExam(exam.id)}
+                            className="p-1 text-gray-400 hover:text-red-600"
+                            title="মুছে ফেলুন"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -509,6 +559,121 @@ function ExamsPage() {
         </div>
       </div>
 
+      {/* Success Alert Dialog */}
+      {showSuccessAlert && (
+        <div 
+          className="fixed inset-0 flex items-center justify-center z-50 bg-black/50 backdrop-blur-sm"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0
+          }}
+          onClick={() => setShowSuccessAlert(false)}
+        >
+          <div 
+            className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 transform transition-all animate-modal-enter"
+            style={{
+              animation: 'modalEnter 0.3s ease-out'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6">
+              <div className="flex items-start">
+                <div className="flex-shrink-0">
+                  <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
+                    <CheckCircle className="w-6 h-6 text-green-600" />
+                  </div>
+                </div>
+                <div className="ml-4 flex-1">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-1">
+                    সফল!
+                  </h3>
+                  <p className="text-sm text-gray-600">
+                    {successMessage}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowSuccessAlert(false)}
+                  className="ml-4 flex-shrink-0 text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="mt-6 flex justify-end">
+                <button
+                  onClick={() => setShowSuccessAlert(false)}
+                  className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
+                >
+                  ঠিক আছে
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error Alert Dialog */}
+      {showErrorAlert && (
+        <div 
+          className="fixed inset-0 flex items-center justify-center z-50 bg-black/50 backdrop-blur-sm"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0
+          }}
+          onClick={() => setShowErrorAlert(false)}
+        >
+          <div 
+            className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 transform transition-all animate-modal-enter"
+            style={{
+              animation: 'modalEnter 0.3s ease-out'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6">
+              <div className="flex items-start">
+                <div className="flex-shrink-0">
+                  <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+                    <XCircle className="w-6 h-6 text-red-600" />
+                  </div>
+                </div>
+                <div className="ml-4 flex-1">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-1">
+                    ত্রুটি
+                  </h3>
+                  <p className="text-sm text-gray-600">
+                    {errorMessage}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowErrorAlert(false)}
+                  className="ml-4 flex-shrink-0 text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="mt-6 flex justify-end">
+                <button
+                  onClick={() => setShowErrorAlert(false)}
+                  className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium"
+                >
+                  ঠিক আছে
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

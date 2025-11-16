@@ -269,6 +269,25 @@ service cloud.firestore {
       );
     }
     
+    // ==================== PUSH SUBSCRIPTIONS ====================
+    
+    match /push_subscriptions/{userId} {
+      // Read: User can read their own subscription
+      allow read: if isActiveUser() && (
+        request.auth.uid == userId ||
+        isSuperAdmin()
+      );
+      
+      // Create/Update: User can create/update their own subscription
+      allow create, update: if isActiveUser() && request.auth.uid == userId;
+      
+      // Delete: User or super admin
+      allow delete: if isActiveUser() && (
+        request.auth.uid == userId ||
+        isSuperAdmin()
+      );
+    }
+    
     // ==================== QR CODES ====================
     
     match /qrCodes/{qrCodeId} {

@@ -4,8 +4,11 @@ import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { studentQueries, User as StudentUser, settingsQueries, classQueries } from '@/lib/database-queries';
+import { db } from '@/lib/firebase';
+import { doc, onSnapshot } from 'firebase/firestore';
 import {
   Home,
   Users,
@@ -37,8 +40,17 @@ import {
   AlertCircle,
   CheckCircle,
   Save,
-  X as XIcon
+  X as XIcon,
+  Globe,
+  FileText,
+  BookOpen as BookOpenIcon,
+  Award,
+  MessageSquare,
+  Gift,
+  Sparkles,
+  Users as UsersIcon
 } from 'lucide-react';
+import AlertDialog from '@/components/ui/alert-dialog';
 
 function StudentEditPage() {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -54,16 +66,55 @@ function StudentEditPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [showSuccessMessage, setShowSuccessMessage] = useState(false);
+  const [imageError, setImageError] = useState(false);
   const router = useRouter();
+  const { userData } = useAuth();
+
+  const getDateInputValue = (value: any) => {
+    if (!value) {
+      return '';
+    }
+    if (typeof value === 'string') {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return value;
+      }
+      const parsed = new Date(value);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString().split('T')[0];
+      }
+      return '';
+    }
+    if (value?.toDate) {
+      const date = value.toDate();
+      if (date instanceof Date && !Number.isNaN(date.getTime())) {
+        return date.toISOString().split('T')[0];
+      }
+      return '';
+    }
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+      return value.toISOString().split('T')[0];
+    }
+    return '';
+  };
   const searchParams = useSearchParams();
   const studentId = searchParams.get('id');
 
+  // Reset image error when userData or user changes
   useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
+
+  useEffect(() => {
+    let firestoreUnsubscribe: (() => void) | null = null;
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         setUser(user);
         if (studentId) {
           await loadStudent(studentId);
+          // Set up real-time listener (only when not actively editing)
+          firestoreUnsubscribe = setupRealtimeListener(studentId);
         }
         await loadSettings();
         await loadClassData();
@@ -73,8 +124,41 @@ function StudentEditPage() {
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (firestoreUnsubscribe) {
+        firestoreUnsubscribe();
+      }
+    };
   }, [router, studentId]);
+
+  // Real-time listener for student updates (only updates when not actively saving)
+  const setupRealtimeListener = (id: string) => {
+    if (!id) return;
+    
+    const studentRef = doc(db, 'students', id);
+    
+    const unsubscribe = onSnapshot(studentRef, (docSnapshot) => {
+      // Don't update if currently saving to avoid conflicts
+      if (isSaving) {
+        console.log('⏸️ Skipping real-time update - currently saving');
+        return;
+      }
+
+      if (docSnapshot.exists()) {
+        const studentData = { uid: docSnapshot.id, ...docSnapshot.data() } as StudentUser;
+        console.log('🔄 Real-time update received in edit page:', studentData);
+        setStudent(studentData);
+        if (studentData.profileImage) {
+          setImagePreview(studentData.profileImage);
+        }
+      }
+    }, (error) => {
+      console.error('Error in real-time listener:', error);
+    });
+
+    return unsubscribe;
+  };
 
   const loadStudent = async (id: string) => {
     setStudentLoading(true);
@@ -143,11 +227,11 @@ function StudentEditPage() {
     }
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file && student) {
-      if (file.size > 5 * 1024 * 1024) {
-        setErrors({ ...errors, profileImage: 'ছবির আকার ৫MB এর বেশি হতে পারবে না' });
+      if (file.size > 10 * 1024 * 1024) {
+        setErrors({ ...errors, profileImage: 'ফাইলের আকার ১০MB এর বেশি হতে পারবে না' });
         return;
       }
 
@@ -156,12 +240,75 @@ function StudentEditPage() {
         return;
       }
 
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setImagePreview(e.target?.result as string);
-        setStudent({ ...student, profileImage: e.target?.result as string });
-      };
-      reader.readAsDataURL(file);
+      try {
+        const publicKey = process.env.NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY;
+        const urlEndpoint = process.env.NEXT_PUBLIC_IMAGEKIT_URL_ENDPOINT;
+
+        if (!publicKey || !urlEndpoint) {
+          setErrors({ ...errors, profileImage: 'ImageKit কনফিগার করা নেই। প্রশাসকের সাথে যোগাযোগ করুন।' });
+          setImagePreview(null);
+          setStudent({ ...student, profileImage: '' });
+          return;
+        }
+
+        setErrors({ ...errors, profileImage: '' });
+
+        // Show preview immediately
+        const reader = new FileReader();
+        reader.onload = event => {
+          setImagePreview(event.target?.result as string);
+        };
+        reader.readAsDataURL(file);
+
+        // Upload to ImageKit
+        const authResponse = await fetch('/api/imagekit');
+        if (!authResponse.ok) {
+          const authError = await authResponse.json().catch(() => null);
+          console.error('ImageKit auth error:', authError);
+          setErrors({ ...errors, profileImage: authError?.message || 'ImageKit কনফিগার করা নেই। প্রশাসকের সাথে যোগাযোগ করুন।' });
+          setImagePreview(null);
+          setStudent({ ...student, profileImage: '' });
+          return;
+        }
+
+        const authData = await authResponse.json();
+        const schoolId = settings?.schoolCode || 'AMAR-2026';
+        const studentId = student.studentId || `temp-${Date.now()}`;
+        const fileName = `student-${studentId}-${Date.now()}`;
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('fileName', fileName);
+        formData.append('folder', `/school-management/students/${schoolId}`);
+        formData.append('tags', `student,profile,${schoolId},${studentId}`);
+        formData.append('publicKey', publicKey);
+        formData.append('token', authData.token);
+        formData.append('expire', authData.expire?.toString() || '');
+        formData.append('signature', authData.signature);
+
+        const uploadResponse = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        const uploadPayload = await uploadResponse.json().catch(() => null);
+        if (!uploadResponse.ok || !uploadPayload?.url) {
+          console.error('ImageKit upload failed:', uploadPayload);
+          setErrors({ ...errors, profileImage: 'ছবি আপলোড করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।' });
+          setImagePreview(null);
+          setStudent({ ...student, profileImage: '' });
+          return;
+        }
+
+        console.log('✅ Image uploaded successfully:', uploadPayload);
+        setStudent({ ...student, profileImage: uploadPayload.url as string });
+        setImagePreview(uploadPayload.url as string);
+      } catch (error) {
+        console.error('❌ Error uploading image:', error);
+        setErrors({ ...errors, profileImage: 'ছবি আপলোড করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।' });
+        setImagePreview(null);
+        setStudent({ ...student, profileImage: '' });
+      }
     }
   };
 
@@ -183,11 +330,9 @@ function StudentEditPage() {
       newErrors.email = 'সঠিক ইমেইল ফরম্যাট দিন';
     }
 
-    if (student?.phoneNumber && !/^01[3-9]\d{8}$/.test(student.phoneNumber)) {
-      newErrors.phoneNumber = 'সঠিক ফোন নম্বর দিন';
-    }
-
-    if (student?.guardianPhone && !/^01[3-9]\d{8}$/.test(student.guardianPhone)) {
+    // Validate guardian phone (from father or mother)
+    const guardianPhone = (student as any)?.fatherPhone || (student as any)?.motherPhone || student?.guardianPhone;
+    if (guardianPhone && !/^01[3-9]\d{8}$/.test(guardianPhone)) {
       newErrors.guardianPhone = 'সঠিক ফোন নম্বর দিন';
     }
 
@@ -202,37 +347,76 @@ function StudentEditPage() {
 
     setIsSaving(true);
     try {
+      // Auto-set guardian info from father (preferred) or mother
+      // Typically use father as guardian
+      const guardianName = student.fatherName || student.motherName || student.guardianName || '';
+      const guardianPhone = (student as any).fatherPhone || (student as any).motherPhone || student.guardianPhone || '';
+
       // Prepare update data with only the fields that should be updated
       const updateData: any = {
         name: student.name,
         displayName: student.displayName || student.name,
         email: student.email,
-        phoneNumber: student.phoneNumber,
-        phone: student.phoneNumber,
-        guardianName: student.guardianName,
-        guardianPhone: student.guardianPhone,
+        guardianName: guardianName,
+        guardianPhone: guardianPhone,
         address: student.address,
         class: student.class,
-        section: student.section,
-        group: student.group,
         studentId: student.studentId,
+        rollNumber: student.rollNumber,
+        dateOfBirth: student.dateOfBirth,
         isActive: student.isActive,
         updatedAt: new Date()
       };
 
+      // Add optional fields only if they have values (not undefined or empty)
+      if (student.gender) updateData.gender = student.gender;
+      if (student.fatherName) updateData.fatherName = student.fatherName;
+      if (student.fatherPhone) updateData.fatherPhone = student.fatherPhone;
+      if (student.fatherOccupation) updateData.fatherOccupation = student.fatherOccupation;
+      if (student.motherName) updateData.motherName = student.motherName;
+      if (student.motherPhone) updateData.motherPhone = student.motherPhone;
+      if (student.motherOccupation) updateData.motherOccupation = student.motherOccupation;
+      if (student.presentAddress) updateData.presentAddress = student.presentAddress;
+      if (student.permanentAddress) updateData.permanentAddress = student.permanentAddress;
+      if (student.city) updateData.city = student.city;
+      if (student.district) updateData.district = student.district;
+      if (student.postalCode) updateData.postalCode = student.postalCode;
+      if (student.previousSchool) updateData.previousSchool = student.previousSchool;
+      if (student.previousClass) updateData.previousClass = student.previousClass;
+      if (student.previousSchoolAddress) updateData.previousSchoolAddress = student.previousSchoolAddress;
+      if (student.reasonForLeaving) updateData.reasonForLeaving = student.reasonForLeaving;
+      if (student.previousGPA) updateData.previousGPA = student.previousGPA;
+
       // Only include profileImage if it exists and is not empty
+      // Skip if it's a base64 string (data:image) as it's too large for Firestore
       if (student.profileImage && student.profileImage.trim() !== '') {
-        updateData.profileImage = student.profileImage;
+        // Only save if it's a URL, not a base64 data URL
+        if (!student.profileImage.startsWith('data:image')) {
+          updateData.profileImage = student.profileImage;
+        } else {
+          console.warn('Skipping base64 image - too large for Firestore. Please upload to ImageKit first.');
+        }
       }
 
-      console.log('Updating student with data:', updateData);
+      // Filter out any undefined or null values to prevent Firestore errors
+      const cleanedUpdateData: any = {};
+      Object.keys(updateData).forEach(key => {
+        if (updateData[key] !== undefined && updateData[key] !== null) {
+          cleanedUpdateData[key] = updateData[key];
+        }
+      });
 
-      await studentQueries.updateStudent(student.uid, updateData);
+      console.log('Updating student with data:', cleanedUpdateData);
 
-      // Show success message
-      alert('শিক্ষার্থীর তথ্য সফলভাবে সংরক্ষণ করা হয়েছে!');
+      await studentQueries.updateStudent(student.uid, cleanedUpdateData);
 
-      router.push(`/admin/students/view?id=${student.uid}`);
+      // Show success message with custom alert
+      setShowSuccessMessage(true);
+      
+      // Navigate after showing success
+      setTimeout(() => {
+        router.push(`/admin/students/view?id=${student.uid}`);
+      }, 2000);
     } catch (error) {
       console.error('Error saving student:', error);
       setError('শিক্ষার্থী সংরক্ষণ করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।');
@@ -255,17 +439,20 @@ function StudentEditPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Heart, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -345,10 +532,21 @@ function StudentEditPage() {
 
               <div className="flex items-center space-x-4 h-full">
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">
-                    {user?.email?.charAt(0).toUpperCase()}
-                  </span>
+                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                  {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                    <img
+                      src={(userData as any)?.photoURL || user?.photoURL || ''}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => {
+                        setImageError(true);
+                      }}
+                    />
+                  ) : (
+                    <span className="text-white font-medium text-sm">
+                      {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -528,32 +726,34 @@ function StudentEditPage() {
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">ফোন নম্বর</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">শিক্ষার্থী আইডি</label>
                       <input
-                        type="tel"
-                        value={student.phoneNumber || student.phone || ''}
-                        onChange={(e) => handleInputChange('phoneNumber', e.target.value)}
-                        className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                          errors.phoneNumber ? 'border-red-300' : 'border-gray-300'
-                        }`}
-                        placeholder="01712345678"
+                        type="text"
+                        value={student.studentId || ''}
+                        onChange={(e) => handleInputChange('studentId', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="STD001"
                       />
-                      {errors.phoneNumber && (
-                        <p className="text-red-600 text-sm mt-1 flex items-center">
-                          <AlertCircle className="w-4 h-4 mr-1" />
-                          {errors.phoneNumber}
-                        </p>
-                      )}
                     </div>
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">রোল নম্বর</label>
                       <input
                         type="text"
-                        value={student.studentId || ''}
-                        onChange={(e) => handleInputChange('studentId', e.target.value)}
+                        value={student.rollNumber || ''}
+                        onChange={(e) => handleInputChange('rollNumber', e.target.value)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        placeholder="০১"
+                        placeholder="০০১"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">জন্ম তারিখ</label>
+                      <input
+                        type="date"
+                        value={getDateInputValue(student.dateOfBirth)}
+                        onChange={(e) => handleInputChange('dateOfBirth', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       />
                     </div>
 
@@ -568,38 +768,6 @@ function StudentEditPage() {
                         {classes.map((className) => (
                           <option key={className} value={className}>
                             {className}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">বিভাগ</label>
-                      <select
-                        value={student.section || ''}
-                        onChange={(e) => handleInputChange('section', e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      >
-                        <option value="">বিভাগ নির্বাচন করুন</option>
-                        {sections.map((section) => (
-                          <option key={section} value={section}>
-                            {section}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">গ্রুপ</label>
-                      <select
-                        value={student.group || ''}
-                        onChange={(e) => handleInputChange('group', e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      >
-                        <option value="">গ্রুপ নির্বাচন করুন</option>
-                        {groups.map((group) => (
-                          <option key={group} value={group}>
-                            {group}
                           </option>
                         ))}
                       </select>
@@ -633,38 +801,129 @@ function StudentEditPage() {
                   </div>
                 </div>
 
-                {/* Guardian Information */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-6">অভিভাবকের তথ্য</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">পিতার তথ্য</h3>
+                  <p className="text-sm text-gray-600 mb-4">পিতার তথ্য অভিভাবক হিসেবে ব্যবহার করা হবে</p>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">অভিভাবকের নাম</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">পিতার নাম</label>
                       <input
                         type="text"
-                        value={student.guardianName || ''}
-                        onChange={(e) => handleInputChange('guardianName', e.target.value)}
+                        value={student.fatherName || ''}
+                        onChange={(e) => handleInputChange('fatherName', e.target.value)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        placeholder="অভিভাবকের নাম"
+                        placeholder="পিতার নাম"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">অভিভাবকের ফোন</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">পিতার ফোন</label>
                       <input
                         type="tel"
-                        value={student.guardianPhone || ''}
-                        onChange={(e) => handleInputChange('guardianPhone', e.target.value)}
-                        className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                          errors.guardianPhone ? 'border-red-300' : 'border-gray-300'
-                        }`}
+                        value={student.fatherPhone || ''}
+                        onChange={(e) => handleInputChange('fatherPhone', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         placeholder="01712345678"
                       />
-                      {errors.guardianPhone && (
-                        <p className="text-red-600 text-sm mt-1 flex items-center">
-                          <AlertCircle className="w-4 h-4 mr-1" />
-                          {errors.guardianPhone}
-                        </p>
-                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">পিতার পেশা</label>
+                      <input
+                        type="text"
+                        value={student.fatherOccupation || ''}
+                        onChange={(e) => handleInputChange('fatherOccupation', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="পিতার পেশা"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">মাতার তথ্য</h3>
+                  <p className="text-sm text-gray-600 mb-4">পিতার তথ্য না থাকলে মাতার তথ্য অভিভাবক হিসেবে ব্যবহার করা হবে</p>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">মাতার নাম</label>
+                      <input
+                        type="text"
+                        value={student.motherName || ''}
+                        onChange={(e) => handleInputChange('motherName', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="মাতার নাম"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">মাতার ফোন</label>
+                      <input
+                        type="tel"
+                        value={student.motherPhone || ''}
+                        onChange={(e) => handleInputChange('motherPhone', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="01712345678"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">মাতার পেশা</label>
+                      <input
+                        type="text"
+                        value={student.motherOccupation || ''}
+                        onChange={(e) => handleInputChange('motherOccupation', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="মাতার পেশা"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-6">পূর্ববর্তী স্কুল তথ্য</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">পূর্ববর্তী স্কুল</label>
+                      <input
+                        type="text"
+                        value={student.previousSchool || ''}
+                        onChange={(e) => handleInputChange('previousSchool', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="পূর্ববর্তী স্কুল"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">পূর্ববর্তী ক্লাস</label>
+                      <input
+                        type="text"
+                        value={student.previousClass || ''}
+                        onChange={(e) => handleInputChange('previousClass', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="পূর্ববর্তী ক্লাস"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">পূর্ববর্তী GPA</label>
+                      <input
+                        type="text"
+                        value={student.previousGPA || ''}
+                        onChange={(e) => handleInputChange('previousGPA', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="GPA"
+                      />
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">স্কুল পরিবর্তনের কারণ</label>
+                      <textarea
+                        value={student.reasonForLeaving || ''}
+                        onChange={(e) => handleInputChange('reasonForLeaving', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="কারণ"
+                        rows={3}
+                      />
                     </div>
                   </div>
                 </div>
@@ -673,6 +932,19 @@ function StudentEditPage() {
           )}
         </div>
       </div>
+
+      {/* Success Alert Dialog */}
+      <AlertDialog
+        isOpen={showSuccessMessage}
+        onClose={() => {
+          setShowSuccessMessage(false);
+          router.push(`/admin/students/view?id=${student?.uid}`);
+        }}
+        type="success"
+        title="সফল!"
+        message="শিক্ষার্থীর তথ্য সফলভাবে সংরক্ষণ করা হয়েছে!"
+        confirmText="ঠিক আছে"
+      />
     </div>
   );
 }

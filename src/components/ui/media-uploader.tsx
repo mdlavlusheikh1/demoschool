@@ -225,7 +225,6 @@ export default function MediaUploader({
             <div className="text-center">
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
               <p className="mt-3 text-gray-600">আপলোড হচ্ছে...</p>
-              <p className="text-sm text-gray-500">ImageKit এ আপলোড করা হচ্ছে এবং Firebase এ সংরক্ষণ করা হচ্ছে</p>
             </div>
           </div>
         )}

@@ -3,6 +3,9 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { AlertProvider } from "@/contexts/AlertContext";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import FaviconUpdater from "@/components/FaviconUpdater";
+import GlobalErrorHandler from "@/components/GlobalErrorHandler";
+import ServiceWorkerInitializer from "@/components/ServiceWorkerInitializer";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -30,7 +33,10 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        <GlobalErrorHandler />
+        <FaviconUpdater />
         <ErrorBoundary>
+          <ServiceWorkerInitializer />
           <AlertProvider>
             <AuthProvider>
               {children}

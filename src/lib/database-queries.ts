@@ -18,8 +18,11 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { SCHOOL_ID } from './constants';
-// Import student queries from separate file
+// Import separate query modules
 import { studentQueries } from './queries/student-queries';
+import { teacherQueries } from './queries/teacher-queries';
+import { parentQueries } from './queries/parent-queries';
+import { feeQueries } from './queries/fee-queries';
 
 // Types
 export interface User {
@@ -83,10 +86,22 @@ export interface User {
   researchInterests?: string;
   // Additional personal fields
   fatherName?: string;
+  fatherPhone?: string;
+  fatherOccupation?: string;
   motherName?: string;
+  motherPhone?: string;
+  motherOccupation?: string;
   nationalId?: string;
   nidNumber?: string;
   permanentAddress?: string;
+  emergencyContact?: string;
+  emergencyRelation?: string;
+  presentAddress?: string;
+  previousSchool?: string;
+  previousClass?: string;
+  previousSchoolAddress?: string;
+  reasonForLeaving?: string;
+  previousGPA?: string;
 }
 
 export interface Class {
@@ -129,6 +144,275 @@ export interface AttendanceRecord {
   method: 'manual' | 'qr_scan';
 }
 
+// Financial/Accounting Interfaces
+export interface FinancialTransaction {
+  id?: string;
+  type: 'income' | 'expense';
+  category: string;
+  subcategory?: string;
+  amount: number;
+  description: string;
+  reference?: string; // Invoice number, receipt number, etc.
+  paymentMethod?: 'cash' | 'bank_transfer' | 'check' | 'online' | 'other';
+  status: 'pending' | 'completed' | 'cancelled' | 'refunded';
+  date: string; // YYYY-MM-DD format
+  dueDate?: string;
+  schoolId: string;
+  recordedBy: string; // User ID who recorded the transaction
+  approvedBy?: string; // User ID who approved (for large amounts)
+  attachments?: string[]; // File URLs for receipts, invoices, etc.
+  notes?: string;
+  tags?: string[];
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+
+  // Relations
+  studentId?: string; // For student-related transactions
+  teacherId?: string; // For teacher-related transactions
+  parentId?: string; // For parent-related transactions
+  classId?: string; // For class-related transactions
+
+  // Tuition fee specific fields
+  paidAmount?: number; // Actual amount paid by parent
+  donation?: number; // Amount collected from donation
+  tuitionFee?: number; // Standard monthly fee
+  month?: string; // Month for tuition fees
+  monthIndex?: number; // Month index (0-11)
+  voucherNumber?: string; // Voucher number
+  studentName?: string; // Student name for display
+  className?: string; // Class name for display
+  rollNumber?: string; // Student roll number
+  paymentDate?: string; // When payment was made
+  collectionDate?: string; // When fee was collected
+  collectedBy?: string; // Who collected the fee
+
+  // Inventory distribution tracking
+  inventoryItems?: Array<{
+    itemId: string;
+    itemName: string;
+    quantity: number;
+    unitPrice: number;
+    totalValue: number;
+  }>; // Items distributed with this transaction
+}
+
+export interface FinancialCategory {
+  id?: string;
+  name: string;
+  type: 'income' | 'expense';
+  description?: string;
+  isActive: boolean;
+  schoolId: string;
+  createdBy: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+export interface FinancialReport {
+  id?: string;
+  title: string;
+  type: 'monthly' | 'quarterly' | 'yearly' | 'custom';
+  startDate: string;
+  endDate: string;
+  totalIncome: number;
+  totalExpense: number;
+  netAmount: number;
+  transactionCount: number;
+  schoolId: string;
+  generatedBy: string;
+  generatedAt?: Timestamp;
+  data?: any; // Detailed breakdown data
+}
+
+export interface Budget {
+  id?: string;
+  categoryId: string;
+  categoryName: string;
+  budgetedAmount: number;
+  spentAmount: number;
+  remainingAmount: number;
+  period: 'monthly' | 'quarterly' | 'yearly';
+  year: number;
+  month?: number; // For monthly budgets
+  quarter?: number; // For quarterly budgets
+  schoolId: string;
+  createdBy: string;
+  isActive: boolean;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+// Fee Management Interfaces
+export interface Fee {
+  id?: string;
+  feeName: string;
+  feeNameEn: string;
+  amount: number;
+  description: string;
+  applicableClasses: string[]; // Array of class IDs
+  feeType: 'monthly' | 'quarterly' | 'yearly' | 'one-time' | 'exam' | 'admission';
+  dueDate?: string;
+  lateFee?: number;
+  isActive: boolean;
+  schoolId: string;
+  createdBy: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+export interface FeeCollection {
+  id?: string;
+  feeId: string;
+  feeName: string;
+  studentId: string;
+  studentName: string;
+  classId: string;
+  className: string;
+  amount: number;
+  lateFee?: number;
+  totalAmount: number;
+  paymentDate: string;
+  dueDate: string;
+  status: 'pending' | 'paid' | 'overdue' | 'cancelled';
+  paymentMethod?: 'cash' | 'bank_transfer' | 'check' | 'online' | 'other';
+  transactionId?: string;
+  notes?: string;
+  collectedBy: string;
+  schoolId: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+export interface Exam {
+  id?: string;
+  name: string;
+  nameEn?: string;
+  class: string;
+  subject: string;
+  date: string;
+  startDate: string;
+  endDate: string;
+  time: string;
+  duration: string;
+  totalMarks: number;
+  students: number;
+  status: 'সক্রিয়' | 'সম্পন্ন' | 'পরিকল্পনা';
+  schoolId: string;
+  createdBy: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+
+  // Result publication controls
+  resultsPublished: boolean;
+  resultsPublishedAt?: Timestamp;
+  resultsPublishedBy?: string;
+  allowResultView: boolean;
+
+  // Additional exam details
+  examType: 'মাসিক' | 'সাময়িক' | 'বার্ষিক' | 'নির্বাচনী' | 'অন্যান্য';
+  passingMarks: number;
+  instructions?: string;
+  venue?: string;
+  invigilators?: string[];
+
+  // Grading system
+  gradingSystem: 'percentage' | 'gpa' | 'letter';
+  gradeDistribution?: {
+    'A+': { min: number; max: number };
+    'A': { min: number; max: number };
+    'A-': { min: number; max: number };
+    'B': { min: number; max: number };
+    'C': { min: number; max: number };
+    'D': { min: number; max: number };
+    'F': { min: number; max: number };
+  };
+}
+
+export interface ExamResult {
+  id?: string;
+  examId: string;
+  examName: string;
+  studentId: string;
+  studentName: string;
+  studentRoll: string;
+  classId: string;
+  className: string;
+  subject: string;
+  obtainedMarks: number;
+  totalMarks: number;
+  percentage: number;
+  grade?: string;
+  gpa?: number;
+  position?: number;
+  remarks?: string;
+  isAbsent: boolean;
+  schoolId: string;
+  enteredBy: string;
+  enteredAt: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+export interface ExamSubject {
+  id?: string;
+  examId: string;
+  subjectId: string;
+  subjectName: string;
+  subjectCode: string;
+  totalMarks: number;
+  passingMarks: number;
+  examDate: string;
+  examTime: string;
+  duration: string;
+  venue?: string;
+  invigilator?: string;
+  instructions?: string;
+  schoolId: string;
+  createdBy: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+export interface ExamSchedule {
+  id?: string;
+  examId: string;
+  examName: string;
+  className: string;
+  subjects: Array<{
+    subjectId: string;
+    subjectName: string;
+    date: string;
+    time: string;
+    duration: string;
+    venue: string;
+    totalMarks: number;
+  }>;
+  schoolId: string;
+  createdBy: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+export interface Subject {
+  id?: string;
+  name: string;
+  nameEn?: string;
+  code: string;
+  teacherId?: string;
+  teacherName: string;
+  classes: string[];
+  students: number;
+  credits: number;
+  type: 'মূল' | 'ধর্মীয়' | 'ঐচ্ছিক';
+  description: string;
+  totalMarks?: number; // Total marks for the subject (default: 100)
+  schoolId: string;
+  createdBy: string;
+  isActive: boolean;
+  isExamSubject?: boolean; // Flag to distinguish exam-specific subjects from regular subjects
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
 // User Management Functions
 export const userQueries = {
   // Get all users
@@ -138,8 +422,13 @@ export const userQueries = {
     return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
   },
 
-  // Get users by role
+  // Get users by role (only admin and super_admin)
   async getUsersByRole(role: string): Promise<User[]> {
+    // Only handle admin and super_admin roles in users collection
+    if (!['admin', 'super_admin'].includes(role)) {
+      return [];
+    }
+
     const q = query(
       collection(db, 'users'),
       where('role', '==', role),
@@ -149,11 +438,12 @@ export const userQueries = {
     return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
   },
 
-  // Get users by school
+  // Get users by school (only admin and super_admin)
   async getUsersBySchool(schoolId: string): Promise<User[]> {
     const q = query(
       collection(db, 'users'),
       where('schoolId', '==', schoolId),
+      where('role', 'in', ['admin', 'super_admin']),
       orderBy('createdAt', 'desc')
     );
     const snapshot = await getDocs(q);
@@ -587,8 +877,7 @@ export const accountingQueries = {
     callback: (students: User[]) => void
   ): Unsubscribe {
     const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'student'),
+      collection(db, 'students'),
       where('schoolId', '==', schoolId),
       orderBy('createdAt', 'desc')
     );
@@ -1622,7 +1911,7 @@ export const examScheduleQueries = {
 export const subjectQueries = {
  // Get all subjects
  async getAllSubjects(schoolId?: string): Promise<Subject[]> {
-   let q = query(collection(db, 'subjects'), orderBy('createdAt', 'desc'));
+   let q = query(collection(db, 'subjects'), orderBy('name'));
 
    if (schoolId) {
      q = query(q, where('schoolId', '==', schoolId));
@@ -1637,7 +1926,7 @@ export const subjectQueries = {
    let q = query(
      collection(db, 'subjects'),
      where('isActive', '==', true),
-     orderBy('createdAt', 'desc')
+     orderBy('name')
    );
 
    if (schoolId) {
@@ -1650,19 +1939,19 @@ export const subjectQueries = {
 
  // Get subjects by type
  async getSubjectsByType(type: 'মূল' | 'ধর্মীয়' | 'ঐচ্ছিক', schoolId?: string): Promise<Subject[]> {
-   let q = query(
-     collection(db, 'subjects'),
-     where('type', '==', type),
-     where('isActive', '==', true),
-     orderBy('createdAt', 'desc')
-   );
+  let q = query(
+    collection(db, 'subjects'),
+    where('type', '==', type),
+    where('isActive', '==', true),
+    orderBy('name')
+  );
 
-   if (schoolId) {
-     q = query(q, where('schoolId', '==', schoolId));
-   }
+  if (schoolId) {
+    q = query(q, where('schoolId', '==', schoolId));
+  }
 
-   const snapshot = await getDocs(q);
-   return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Subject));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Subject));
  },
 
  // Get subject by ID
@@ -1698,7 +1987,6 @@ export const subjectQueries = {
    await deleteDoc(doc(db, 'subjects', id));
  },
 
-
  // Real-time listener for subjects
  subscribeToSubjects(
    schoolId: string,
@@ -1708,7 +1996,7 @@ export const subjectQueries = {
    const q = query(
      collection(db, 'subjects'),
      where('schoolId', '==', schoolId),
-     orderBy('createdAt', 'desc')
+     orderBy('name')
    );
 
    return onSnapshot(q, (snapshot) => {
@@ -1726,7 +2014,20 @@ export const subjectQueries = {
 };
 
 // Class Management Functions
-export const classQueries = {
+interface ClassQueries {
+  getAllClasses(): Promise<Class[]>;
+  getClassesBySchool(schoolId: string): Promise<Class[]>;
+  getClassesByTeacher(teacherId: string): Promise<Class[]>;
+  createClass(classData: Omit<Class, 'createdAt' | 'updatedAt'> & { classId?: string }): Promise<string>;
+  updateClass(classId: string, updates: Partial<Class>): Promise<void>;
+  subscribeToClassesBySchool(
+    schoolId: string,
+    callback: (classes: Class[]) => void,
+    errorCallback?: (error: any) => void
+  ): Unsubscribe;
+}
+
+export const classQueries: ClassQueries = {
   // Get all classes
   async getAllClasses(): Promise<Class[]> {
     const q = query(collection(db, 'classes'), orderBy('className'));
@@ -2005,7 +2306,7 @@ export const emailUtils = {
   },
 
   // Generate email address automatically with Bengali support
-  generateStudentEmail(name: string, studentId: string, schoolName: string = 'iqra'): string {
+  generateStudentEmail(name: string, identifier: string, schoolName: string = 'iqra'): string {
     // Check if name contains Bengali characters
     const hasBengali = /[\u0980-\u09FF]/.test(name);
 
@@ -2019,9 +2320,10 @@ export const emailUtils = {
       cleanName = this.cleanForEmail(name);
     }
 
-    const rollNumber = studentId.padStart(3, '0');
+    // Use the identifier directly (could be roll number or student ID)
+    const cleanIdentifier = identifier.padStart(3, '0');
 
-    return `${cleanName}${rollNumber}@${schoolName}.bd.edu`;
+    return `${cleanName}${cleanIdentifier}@${schoolName}.bd.edu`;
   },
 
   // Generate random email for bulk import
@@ -2046,370 +2348,6 @@ export const emailUtils = {
   }
 };
 
-// Teacher Management Functions
-export const teacherQueries = {
-  // Get all teachers
-  async getAllTeachers(): Promise<User[]> {
-    const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'teacher'),
-      orderBy('createdAt', 'desc')
-    );
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
-  },
-
-  // Get teachers by school
-  async getTeachersBySchool(schoolId: string): Promise<User[]> {
-    const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'teacher'),
-      where('schoolId', '==', schoolId),
-      orderBy('createdAt', 'desc')
-    );
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
-  },
-
-  // Get active teachers
-  async getActiveTeachers(): Promise<User[]> {
-    const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'teacher'),
-      where('isActive', '==', true),
-      orderBy('createdAt', 'desc')
-    );
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
-  },
-
-  // Get inactive teachers
-  async getInactiveTeachers(): Promise<User[]> {
-    const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'teacher'),
-      where('isActive', '==', false),
-      orderBy('createdAt', 'desc')
-    );
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
-  },
-
-  // Get teacher by ID
-  async getTeacherById(uid: string): Promise<User | null> {
-    const docRef = doc(db, 'users', uid);
-    const docSnap = await getDoc(docRef);
-    return docSnap.exists() ? { uid: docSnap.id, ...docSnap.data() } as User : null;
-  },
-
-  // Get teachers by subject
-  async getTeachersBySubject(subject: string): Promise<User[]> {
-    const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'teacher'),
-      where('subject', '==', subject),
-      orderBy('createdAt', 'desc')
-    );
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
-  },
-
-  // Create teacher
-  async createTeacher(teacherData: Omit<User, 'createdAt' | 'updatedAt'> & { uid?: string }): Promise<string> {
-    const teacherDoc = {
-      ...teacherData,
-      role: 'teacher' as const,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    };
-
-    if (teacherData.uid) {
-      await setDoc(doc(db, 'users', teacherData.uid), teacherDoc);
-      return teacherData.uid;
-    } else {
-      const docRef = await addDoc(collection(db, 'users'), teacherDoc);
-      return docRef.id;
-    }
-  },
-
-  // Update teacher
-  async updateTeacher(uid: string, updates: Partial<User>): Promise<void> {
-    try {
-      const docRef = doc(db, 'users', uid);
-      const updateData = {
-        ...updates,
-        updatedAt: serverTimestamp()
-      };
-
-      console.log('Updating teacher document:', uid, 'with data:', updateData);
-      await updateDoc(docRef, updateData);
-      console.log('Teacher updated successfully');
-    } catch (error) {
-      console.error('Error updating teacher:', error);
-      throw new Error(`Failed to update teacher: ${error}`);
-    }
-  },
-
-  // Activate/Deactivate teacher
-  async setTeacherActive(uid: string, isActive: boolean): Promise<void> {
-    const docRef = doc(db, 'users', uid);
-    await updateDoc(docRef, {
-      isActive,
-      updatedAt: serverTimestamp()
-    });
-  },
-
-  // Delete teacher
-  async deleteTeacher(uid: string): Promise<void> {
-    try {
-      console.log('Attempting to delete teacher:', uid);
-      await deleteDoc(doc(db, 'users', uid));
-      console.log('Teacher deleted successfully:', uid);
-    } catch (error) {
-      console.error('Error deleting teacher:', error);
-      throw error;
-    }
-  },
-
-  // Get teacher statistics
-  async getTeacherStats(schoolId?: string): Promise<{
-    totalTeachers: number;
-    activeTeachers: number;
-    inactiveTeachers: number;
-    teachersBySubject: Record<string, number>;
-    experiencedTeachers: number;
-  }> {
-    let q = query(collection(db, 'users'), where('role', '==', 'teacher'));
-
-    if (schoolId) {
-      q = query(q, where('schoolId', '==', schoolId));
-    }
-
-    const snapshot = await getDocs(q);
-    const teachers = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
-
-    const stats = {
-      totalTeachers: teachers.length,
-      activeTeachers: teachers.filter(t => t.isActive).length,
-      inactiveTeachers: teachers.filter(t => !t.isActive).length,
-      teachersBySubject: {} as Record<string, number>,
-      experiencedTeachers: teachers.filter(t => {
-        // Consider teachers with 5+ years experience as experienced
-        const experience = t.experience || '0 বছর';
-        const years = parseInt(experience.split(' ')[0]) || 0;
-        return years >= 5;
-      }).length
-    };
-
-    teachers.forEach(teacher => {
-      // Count by subject
-      if (teacher.subject) {
-        stats.teachersBySubject[teacher.subject] = (stats.teachersBySubject[teacher.subject] || 0) + 1;
-      }
-    });
-
-    return stats;
-  }
-};
-
-// Re-export student queries from separate file
-
-// Parent Management Functions
-export const parentQueries = {
-  // Get all parents
-  async getAllParents(): Promise<User[]> {
-    const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'parent'),
-      orderBy('createdAt', 'desc')
-    );
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
-  },
-
-  // Get parents by school
-  async getParentsBySchool(schoolId: string): Promise<User[]> {
-    const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'parent'),
-      where('schoolId', '==', schoolId),
-      orderBy('createdAt', 'desc')
-    );
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
-  },
-
-  // Get parents who have associated students
-  async getParentsWithStudents(): Promise<User[]> {
-    try {
-      // Get all parents
-      const allParents = await this.getAllParents();
-      console.log('Total parents found:', allParents.length);
-
-      // Get all students to find which parents have students
-      const allStudents = await studentQueries.getAllStudents();
-      console.log('Total students found:', allStudents.length);
-
-      // Create a map of parent information from students
-      const parentStudentMap = new Map<string, any[]>();
-
-      allStudents.forEach(student => {
-        console.log('Student guardian info:', {
-          name: student.name || student.displayName,
-          guardianName: student.guardianName,
-          guardianPhone: student.guardianPhone,
-          phoneNumber: student.phoneNumber,
-          phone: student.phone
-        });
-
-        if (student.guardianName && student.guardianPhone) {
-          const parentKey = `${student.guardianName}-${student.guardianPhone}`;
-          if (!parentStudentMap.has(parentKey)) {
-            parentStudentMap.set(parentKey, []);
-          }
-          parentStudentMap.get(parentKey)!.push({
-            name: student.name || student.displayName,
-            class: student.class,
-            studentId: student.studentId,
-            uid: student.uid
-          });
-        }
-      });
-
-      console.log('Parent-student mapping:', Array.from(parentStudentMap.entries()));
-
-      // Filter parents to only include those who have students
-      const parentsWithStudents = allParents.filter(parent => {
-        const parentKey = `${parent.name}-${parent.phoneNumber || parent.phone}`;
-        const hasMatch = parentStudentMap.has(parentKey);
-        console.log('Checking parent:', parent.name, 'Key:', parentKey, 'Has match:', hasMatch);
-        return hasMatch;
-      });
-
-      console.log('Parents with students:', parentsWithStudents.length);
-
-      // Add student information to parent objects
-      return parentsWithStudents.map(parent => {
-        const parentKey = `${parent.name}-${parent.phoneNumber || parent.phone}`;
-        const associatedStudents = parentStudentMap.get(parentKey) || [];
-
-        return {
-          ...parent,
-          associatedStudents: associatedStudents
-        };
-      });
-    } catch (error) {
-      console.error('Error getting parents with students:', error);
-      return [];
-    }
-  },
-
-  // Get all parents (for debugging - shows all parents regardless of student association)
-  async getAllParentsUnfiltered(): Promise<User[]> {
-    try {
-      const allParents = await this.getAllParents();
-      console.log('All parents (unfiltered):', allParents.length);
-      return allParents;
-    } catch (error) {
-      console.error('Error getting all parents:', error);
-      return [];
-    }
-  },
-
-
-  // Get parent by ID
-  async getParentById(uid: string): Promise<User | null> {
-    const docRef = doc(db, 'users', uid);
-    const docSnap = await getDoc(docRef);
-    return docSnap.exists() ? { uid: docSnap.id, ...docSnap.data() } as User : null;
-  },
-
-  // Create parent
-  async createParent(parentData: Omit<User, 'createdAt' | 'updatedAt' | 'uid'> & { uid?: string }): Promise<string> {
-    const parentDoc = {
-      ...parentData,
-      role: 'parent' as const,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    };
-
-    if (parentData.uid) {
-      await setDoc(doc(db, 'users', parentData.uid), parentDoc);
-      return parentData.uid;
-    } else {
-      const docRef = await addDoc(collection(db, 'users'), parentDoc);
-      return docRef.id;
-    }
-  },
-
-  // Update parent
-  async updateParent(uid: string, updates: Partial<User>): Promise<void> {
-    try {
-      const docRef = doc(db, 'users', uid);
-      const updateData = {
-        ...updates,
-        updatedAt: serverTimestamp()
-      };
-
-      console.log('Updating parent document:', uid, 'with data:', updateData);
-      await updateDoc(docRef, updateData);
-      console.log('Parent updated successfully');
-    } catch (error) {
-      console.error('Error updating parent:', error);
-      throw new Error(`Failed to update parent: ${error}`);
-    }
-  },
-
-  // Delete parent
-  async deleteParent(uid: string): Promise<void> {
-    try {
-      console.log('Attempting to delete parent:', uid);
-      await deleteDoc(doc(db, 'users', uid));
-      console.log('Parent deleted successfully:', uid);
-    } catch (error) {
-      console.error('Error deleting parent:', error);
-      throw error;
-    }
-  },
-
-  // Get parent statistics
-  async getParentStats(schoolId?: string): Promise<{
-    totalParents: number;
-    parentsWithStudents: number;
-    parentsWithoutStudents: number;
-    studentsPerParent: Record<string, number>;
-  }> {
-    let q = query(collection(db, 'users'), where('role', '==', 'parent'));
-
-    if (schoolId) {
-      q = query(q, where('schoolId', '==', schoolId));
-    }
-
-    const snapshot = await getDocs(q);
-    const parents = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
-
-    const parentsWithStudents = await this.getParentsWithStudents();
-    const parentsWithoutStudents = parents.filter(parent =>
-      !parentsWithStudents.some(pws => pws.uid === parent.uid)
-    );
-
-    const stats = {
-      totalParents: parents.length,
-      parentsWithStudents: parentsWithStudents.length,
-      parentsWithoutStudents: parentsWithoutStudents.length,
-      studentsPerParent: {} as Record<string, number>
-    };
-
-    // Count students per parent
-    parentsWithStudents.forEach(parent => {
-      const studentCount = parent.associatedStudents?.length || 0;
-      stats.studentsPerParent[studentCount.toString()] =
-        (stats.studentsPerParent[studentCount.toString()] || 0) + 1;
-    });
-
-    return stats;
-  }
-};
 
 // Utility Functions
 export const dbUtils = {
@@ -2572,6 +2510,108 @@ export interface SystemSettings {
   darkMode: boolean;
   rtlSupport: boolean;
 
+  // Public Pages
+  galleryPageEnabled?: boolean;
+  aboutPageEnabled?: boolean;
+  contactPageEnabled?: boolean;
+
+  // Contact Page Content
+  contactPageTitle?: string;
+  contactPageSubtitle?: string;
+  contactPhones?: string[];
+  contactEmails?: string[];
+  contactAddress?: string[];
+  contactHours?: string[];
+  contactDepartments?: Array<{
+    name: string;
+    phone: string;
+    email: string;
+    description: string;
+  }>;
+  contactMapEmbedCode?: string;
+  contactMapAddress?: string;
+  contactSocialMedia?: {
+    facebook?: string;
+    twitter?: string;
+    instagram?: string;
+    youtube?: string;
+  };
+  contactFormSubjects?: string[];
+
+  // Gallery Page Content
+  galleryPageTitle?: string;
+  galleryPageSubtitle?: string;
+  galleryCategories?: string[];
+  galleryEvents?: string[];
+  galleryItems?: Array<{
+    id: string;
+    title: string;
+    description: string;
+    imageUrl: string;
+    category: string;
+    event: string;
+    date: string;
+    photographer: string;
+    location: string;
+    tags: string[];
+    type?: 'image' | 'video';
+    uploadedBy?: string;
+  }>;
+
+  // About Page Content
+  aboutPageTitle?: string;
+  aboutPageSubtitle?: string;
+  aboutIntro?: string;
+  aboutImageUrl?: string;
+  aboutMission?: string;
+  aboutVision?: string;
+  aboutStats?: Array<{
+    label: string;
+    value: string;
+  }>;
+  aboutValues?: Array<{
+    title: string;
+    description: string;
+  }>;
+  aboutAchievements?: Array<{
+    year: string;
+    title: string;
+    description: string;
+  }>;
+  aboutTeam?: Array<{
+    name: string;
+    role: string;
+    description: string;
+    imageUrl?: string;
+  }>;
+
+  // Home Page Slider Content
+  homeSliderSlides?: Array<{
+    id: string;
+    title: string;
+    subtitle: string;
+    bgGradient: string; // Tailwind gradient classes
+    aiText: string;
+    aiSubtext: string;
+    imageUrl?: string; // Slider image URL
+    order?: number; // For ordering slides
+    isActive?: boolean;
+  }>;
+
+  // Home Page Admission Section
+  homeAdmissionEnabled?: boolean;
+  homeAdmissionTitle?: string;
+  homeAdmissionApplyNow?: string;
+  homeAdmissionClasses?: string;
+  homeAdmissionClassesLabel?: string;
+  homeAdmissionOpen?: string;
+  homeAdmissionOpenLabel?: string;
+  homeAdmissionDeadline?: string;
+  homeAdmissionAdmitNow?: string;
+  homeAdmissionOfficeHours?: string;
+  homeAdmissionContactPhone?: string;
+  homeAdmissionExperience?: string;
+
   // Notifications
   smtpServer: string;
   smtpPort: number;
@@ -2587,6 +2627,34 @@ export interface SystemSettings {
   systemAlertPush: boolean;
   examScheduleEmail: boolean;
   examSchedulePush: boolean;
+  examResultsEmail: boolean;
+  examResultsPush: boolean;
+  homeworkAssignmentEmail: boolean;
+  homeworkAssignmentPush: boolean;
+  homeworkReminderEmail: boolean;
+  homeworkReminderPush: boolean;
+  classAnnouncementEmail: boolean;
+  classAnnouncementPush: boolean;
+  noticeNotificationEmail: boolean;
+  noticeNotificationPush: boolean;
+  eventReminderEmail: boolean;
+  eventReminderPush: boolean;
+  messageNotificationEmail: boolean;
+  messageNotificationPush: boolean;
+  complaintResponseEmail: boolean;
+  complaintResponsePush: boolean;
+  feePaymentConfirmationEmail: boolean;
+  feePaymentConfirmationPush: boolean;
+  feePaymentConfirmationSMS: boolean;
+  admissionConfirmationEmail: boolean;
+  admissionConfirmationPush: boolean;
+  admissionConfirmationSMS: boolean;
+  teacherAssignmentEmail: boolean;
+  teacherAssignmentPush: boolean;
+  teacherAssignmentSMS: boolean;
+  classScheduleEmail: boolean;
+  classSchedulePush: boolean;
+  classScheduleSMS: boolean;
 
   // System
   debugMode: boolean;
@@ -2880,320 +2948,6 @@ export interface Subject {
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 }
-
-// Fee Management Functions
-export const feeQueries = {
-  // Get all fees
-  async getAllFees(schoolId?: string): Promise<Fee[]> {
-    let q = query(collection(db, 'fees'), orderBy('createdAt', 'desc'));
-
-    if (schoolId) {
-      q = query(q, where('schoolId', '==', schoolId));
-    }
-
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Fee));
-  },
-
-  // Get active fees
-  async getActiveFees(schoolId?: string): Promise<Fee[]> {
-    let q = query(
-      collection(db, 'fees'),
-      where('isActive', '==', true),
-      orderBy('createdAt', 'desc')
-    );
-
-    if (schoolId) {
-      q = query(q, where('schoolId', '==', schoolId));
-    }
-
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Fee));
-  },
-
-  // Get fees by class
-  async getFeesByClass(classId: string): Promise<Fee[]> {
-    const q = query(
-      collection(db, 'fees'),
-      where('applicableClasses', 'array-contains', classId),
-      where('isActive', '==', true),
-      orderBy('createdAt', 'desc')
-    );
-
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Fee));
-  },
-
-  // Get fee by ID
-  async getFeeById(id: string): Promise<Fee | null> {
-    const docRef = doc(db, 'fees', id);
-    const docSnap = await getDoc(docRef);
-    return docSnap.exists() ? { id: docSnap.id, ...docSnap.data() } as Fee : null;
-  },
-
-  // Create fee
-  async createFee(feeData: Omit<Fee, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
-    const feeDoc = {
-      ...feeData,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    };
-
-    const docRef = await addDoc(collection(db, 'fees'), feeDoc);
-    return docRef.id;
-  },
-
-  // Update fee
-  async updateFee(id: string, updates: Partial<Fee>): Promise<void> {
-    // Filter out undefined values before updating Firebase
-    const cleanUpdates = Object.fromEntries(
-      Object.entries(updates).filter(([_, value]) => value !== undefined)
-    );
-
-    const docRef = doc(db, 'fees', id);
-    await updateDoc(docRef, {
-      ...cleanUpdates,
-      updatedAt: serverTimestamp()
-    });
-  },
-
-  // Delete fee
-  async deleteFee(id: string): Promise<void> {
-    await deleteDoc(doc(db, 'fees', id));
-  },
-
-  // Delete all fees for a school
-  async deleteAllFees(schoolId: string): Promise<number> {
-    try {
-      const fees = await this.getAllFees(schoolId);
-      let deletedCount = 0;
-
-      for (const fee of fees) {
-        if (fee.id) {
-          await this.deleteFee(fee.id);
-          deletedCount++;
-        }
-      }
-
-      console.log(`✅ Deleted ${deletedCount} fees for school ${schoolId}`);
-      return deletedCount;
-    } catch (error) {
-      console.error('❌ Error deleting all fees:', error);
-      throw error;
-    }
-  },
-
-  // Fee Collection Functions
-  async getAllFeeCollections(schoolId?: string): Promise<FeeCollection[]> {
-    let q = query(collection(db, 'feeCollections'), orderBy('createdAt', 'desc'));
-
-    if (schoolId) {
-      q = query(q, where('schoolId', '==', schoolId));
-    }
-
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FeeCollection));
-  },
-
-  async getFeeCollectionsByStudent(studentId: string): Promise<FeeCollection[]> {
-    const q = query(
-      collection(db, 'feeCollections'),
-      where('studentId', '==', studentId),
-      orderBy('createdAt', 'desc')
-    );
-
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FeeCollection));
-  },
-
-  async getFeeCollectionsByFee(feeId: string): Promise<FeeCollection[]> {
-    const q = query(
-      collection(db, 'feeCollections'),
-      where('feeId', '==', feeId),
-      orderBy('createdAt', 'desc')
-    );
-
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FeeCollection));
-  },
-
-  async getPendingFeeCollections(schoolId?: string): Promise<FeeCollection[]> {
-    let q = query(
-      collection(db, 'feeCollections'),
-      where('status', '==', 'pending'),
-      orderBy('dueDate', 'asc')
-    );
-
-    if (schoolId) {
-      q = query(q, where('schoolId', '==', schoolId));
-    }
-
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FeeCollection));
-  },
-
-  async getOverdueFeeCollections(schoolId?: string): Promise<FeeCollection[]> {
-    const today = new Date().toISOString().split('T')[0];
-
-    let q = query(
-      collection(db, 'feeCollections'),
-      where('status', '==', 'pending'),
-      where('dueDate', '<', today),
-      orderBy('dueDate', 'asc')
-    );
-
-    if (schoolId) {
-      q = query(q, where('schoolId', '==', schoolId));
-    }
-
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FeeCollection));
-  },
-
-  async createFeeCollection(collectionData: Omit<FeeCollection, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
-    const collectionDoc = {
-      ...collectionData,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    };
-
-    const docRef = await addDoc(collection(db, 'feeCollections'), collectionDoc);
-    return docRef.id;
-  },
-
-  async updateFeeCollection(id: string, updates: Partial<FeeCollection>): Promise<void> {
-    const docRef = doc(db, 'feeCollections', id);
-    await updateDoc(docRef, {
-      ...updates,
-      updatedAt: serverTimestamp()
-    });
-  },
-
-  async markFeeAsPaid(
-    collectionId: string,
-    paymentMethod: 'cash' | 'bank_transfer' | 'check' | 'online' | 'other',
-    transactionId?: string,
-    notes?: string,
-    collectedBy: string = 'current-user'
-  ): Promise<void> {
-    const today = new Date().toISOString().split('T')[0];
-
-    await this.updateFeeCollection(collectionId, {
-      status: 'paid',
-      paymentDate: today,
-      paymentMethod,
-      transactionId,
-      notes,
-      collectedBy
-    });
-  },
-
-  // Generate fee collections for all students in applicable classes
-  async generateFeeCollectionsForFee(feeId: string, dueDate?: string): Promise<number> {
-    try {
-      const fee = await this.getFeeById(feeId);
-      if (!fee || !fee.isActive) {
-        throw new Error('Fee not found or inactive');
-      }
-
-      const students = await studentQueries.getActiveStudents();
-      const applicableStudents = students.filter(student =>
-        fee.applicableClasses.includes(student.class || '')
-      );
-
-      let collectionCount = 0;
-
-      for (const student of applicableStudents) {
-        const existingCollection = await this.getStudentFeeCollection(student.uid, feeId);
-
-        if (!existingCollection) {
-          const classInfo = await classQueries.getClassesBySchool(fee.schoolId)
-            .then(classes => classes.find(c => c.className === student.class));
-
-          const collectionData: Omit<FeeCollection, 'id' | 'createdAt' | 'updatedAt'> = {
-            feeId: fee.id!,
-            feeName: fee.feeName,
-            studentId: student.uid,
-            studentName: student.name || student.displayName || '',
-            classId: classInfo?.classId || '',
-            className: student.class || '',
-            amount: fee.amount,
-            lateFee: 0,
-            totalAmount: fee.amount,
-            paymentDate: '',
-            dueDate: dueDate || fee.dueDate || '',
-            status: 'pending',
-            collectedBy: '',
-            schoolId: fee.schoolId
-          };
-
-          await this.createFeeCollection(collectionData);
-          collectionCount++;
-        }
-      }
-
-      return collectionCount;
-    } catch (error) {
-      console.error('Error generating fee collections:', error);
-      throw error;
-    }
-  },
-
-  // Get existing fee collection for a student and fee
-  async getStudentFeeCollection(studentId: string, feeId: string): Promise<FeeCollection | null> {
-    const q = query(
-      collection(db, 'feeCollections'),
-      where('studentId', '==', studentId),
-      where('feeId', '==', feeId),
-      limit(1)
-    );
-
-    const snapshot = await getDocs(q);
-    return snapshot.empty ? null : { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as FeeCollection;
-  },
-
-  // Get fee collection statistics
-  async getFeeCollectionStats(schoolId?: string): Promise<{
-    totalCollections: number;
-    pendingAmount: number;
-    paidAmount: number;
-    overdueAmount: number;
-    pendingCount: number;
-    paidCount: number;
-    overdueCount: number;
-  }> {
-    const collections = await this.getAllFeeCollections(schoolId);
-
-    const stats = {
-      totalCollections: collections.length,
-      pendingAmount: 0,
-      paidAmount: 0,
-      overdueAmount: 0,
-      pendingCount: 0,
-      paidCount: 0,
-      overdueCount: 0
-    };
-
-    collections.forEach(collection => {
-      switch (collection.status) {
-        case 'pending':
-          stats.pendingAmount += collection.totalAmount;
-          stats.pendingCount++;
-          break;
-        case 'paid':
-          stats.paidAmount += collection.totalAmount;
-          stats.paidCount++;
-          break;
-        case 'overdue':
-          stats.overdueAmount += collection.totalAmount;
-          stats.overdueCount++;
-          break;
-      }
-    });
-
-    return stats;
-  }
-};
 
 // Inventory Management Functions
 export const inventoryQueries = {
@@ -3505,12 +3259,12 @@ export const inventoryQueries = {
       this.getAllInventoryAlerts(schoolId)
     ]);
 
-    const lowStockItems = items.filter(item => item.quantity <= item.minQuantity && item.quantity > 0);
-    const outOfStockItems = items.filter(item => item.quantity === 0);
+    const lowStockItems = items.filter((item: InventoryItem) => item.quantity <= item.minQuantity && item.quantity > 0);
+    const outOfStockItems = items.filter((item: InventoryItem) => item.quantity === 0);
 
     // Calculate category statistics
     const categoryStats: Record<string, { count: number; value: number }> = {};
-    items.forEach(item => {
+    items.forEach((item: InventoryItem) => {
       if (!categoryStats[item.category]) {
         categoryStats[item.category] = { count: 0, value: 0 };
       }
@@ -3526,13 +3280,13 @@ export const inventoryQueries = {
     return {
       totalItems: items.length,
       totalValue: items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0),
-      activeItems: items.filter(item => item.status === 'active').length,
-      inactiveItems: items.filter(item => item.status === 'inactive').length,
+      activeItems: items.filter((item: InventoryItem) => item.status === 'active').length,
+      inactiveItems: items.filter((item: InventoryItem) => item.status === 'inactive').length,
       lowStockItems: lowStockItems.length,
       outOfStockItems: outOfStockItems.length,
       categoriesCount: categories.length,
       recentMovements: movements.length,
-      alertsCount: alerts.filter(alert => !alert.isResolved).length,
+      alertsCount: alerts.filter((alert: InventoryAlert) => !alert.isResolved).length,
       topCategories
     };
   },
@@ -3711,8 +3465,8 @@ export const settingsQueries = {
   // Get default settings
   getDefaultSettings(): SystemSettings {
     return {
-      schoolName: 'আমার স্কুল',
-      schoolCode: 'IQRA-2025',
+      schoolName: 'ইকরা নূরানী একাডেমি',
+      schoolCode: '102330',
       schoolAddress: 'ঢাকা, বাংলাদেশ',
       schoolPhone: '+8801712345678',
       schoolEmail: 'info@iqraschool.edu.bd',
@@ -3755,6 +3509,135 @@ export const settingsQueries = {
       darkMode: false,
       rtlSupport: false,
 
+      // Public Pages
+      galleryPageEnabled: true,
+      aboutPageEnabled: true,
+      contactPageEnabled: true,
+
+      // Contact Page Content
+      contactPageTitle: 'যোগাযোগ করুন',
+      contactPageSubtitle: 'আমাদের সাথে যোগাযোগ করে আপনার প্রশ্নের উত্তর পান এবং আমাদের সম্পর্কে আরও জানুন',
+      contactPhones: ['+৮৮০ ১৭১১ ২৩৪৫৬৭', '+৮৮০ ১৯১১ ২৩৪৫৬৭'],
+      contactEmails: ['info@iqraschool.edu', 'admission@iqraschool.edu'],
+      contactAddress: ['রামপুরা, ঢাকা-১২১৯', 'বাংলাদেশ'],
+      contactHours: ['রবি-বৃহ: সকাল ৮টা - বিকাল ৫টা', 'শুক্র: সকাল ৮টা - দুপুর ১২টা'],
+      contactDepartments: [
+        {
+          name: 'ভর্তি বিভাগ',
+          phone: '+৮৮০ ১৭১১ ২৩৪৫৬৭',
+          email: 'admission@iqraschool.edu',
+          description: 'নতুন শিক্ষার্থী ভর্তি সংক্রান্ত সকল তথ্য'
+        },
+        {
+          name: 'শিক্ষা বিভাগ',
+          phone: '+৮৮০ ১৭১১ ২৩৪৫৬৮',
+          email: 'academic@iqraschool.edu',
+          description: 'শিক্ষা কার্যক্রম ও পাঠ্যক্রম সংক্রান্ত'
+        },
+        {
+          name: 'প্রশাসন',
+          phone: '+৮৮০ ১৭১১ ২৩৪৫৬৯',
+          email: 'admin@iqraschool.edu',
+          description: 'সাধারণ প্রশাসনিক কাজ'
+        },
+        {
+          name: 'হিসাব বিভাগ',
+          phone: '+৮৮০ ১৭১১ ২৩৪৫৭০',
+          email: 'accounts@iqraschool.edu',
+          description: 'ফি ও আর্থিক বিষয়াদি'
+        }
+      ],
+      contactMapEmbedCode: '',
+      contactMapAddress: 'রামপুরা, ঢাকা-১২১৯',
+      contactSocialMedia: {
+        facebook: '',
+        twitter: '',
+        instagram: '',
+        youtube: ''
+      },
+      contactFormSubjects: ['ভর্তি সংক্রান্ত', 'শিক্ষা সংক্রান্ত', 'ফি সংক্রান্ত', 'সাধারণ তথ্য', 'অভিযোগ', 'পরামর্শ'],
+
+      // Gallery Page Content
+      galleryPageTitle: 'গ্যালারী',
+      galleryPageSubtitle: 'স্কুলের বিভিন্ন অনুষ্ঠান, ইভেন্ট এবং স্মরণীয় মুহূর্তগুলো',
+      galleryCategories: ['সকল বিভাগ', 'events', 'academic', 'cultural', 'environment', 'sports'],
+      galleryEvents: ['সকল অনুষ্ঠান', 'বার্ষিক ক্রীড়া প্রতিযোগিতা', 'বিজ্ঞান মেলা', 'ইসলামিক সাংস্কৃতিক অনুষ্ঠান', 'শিক্ষক দিবস', 'বইমেলা', 'বৃক্ষরোপণ কর্মসূচি'],
+      galleryItems: [],
+
+      // About Page Content
+      aboutPageTitle: 'আমাদের সম্পর্কে',
+      aboutPageSubtitle: 'একটি আধুনিক ইসলামিক শিক্ষা প্রতিষ্ঠান যা ধর্মীয় এবং আধুনিক শিক্ষার সমন্বয়ে শিক্ষার্থীদের বিকাশে কাজ করে',
+      aboutIntro: 'আমার স্কুল ২০১৮ সালে প্রতিষ্ঠিত হয়। প্রতিষ্ঠার শুরু থেকেই আমাদের দান শিক্ষার মানোন্নয়ন ও নৈতিক শিক্ষার সমান গুরুত্ব সাথে প্রদান করে আসছে।',
+      aboutMission: 'শিক্ষার্থীদের নৈতিকতা, চরিত্র গঠন এবং আধুনিক জ্ঞানে দক্ষ করে গড়ে তোলা।',
+      aboutVision: 'আমরা বিশ্বাস করি প্রতিটি শিক্ষার্থী অসীম সম্ভাবনার অধিকারী।',
+      aboutStats: [
+        { label: 'শিক্ষার্থী', value: '৫০০+' },
+        { label: 'শিক্ষক', value: '৩৫+' },
+        { label: 'বছর', value: '১৫+' },
+        { label: 'সাফল্য', value: '৯৫%' }
+      ],
+      aboutValues: [
+        { title: 'ভালোবাসা', description: 'শিক্ষার্থীদের প্রতি অকৃত্রিম ভালোবাসা এবং যত্ন নিয়ে শিক্ষাদান' },
+        { title: 'নিরাপত্তা', description: 'সব শিক্ষার্থীর জন্য নিরাপদ এবং সুন্দর পরিবেশ নিশ্চিত করা' },
+        { title: 'মানসম্পন্ন শিক্ষা', description: 'আধুনিক শিক্ষা পদ্ধতি এবং ইসলামিক মূল্যবোধের সমন্বয়' },
+        { title: 'বিশ্বায়ন', description: 'আন্তর্জাতিক মানের শিক্ষা দিয়ে বিশ্ব নাগরিক তৈরি করা' }
+      ],
+      aboutAchievements: [
+        { year: '২০২৪', title: 'সেরা শিক্ষা প্রতিষ্ঠান পুরস্কার', description: 'জেলা শিক্ষা অফিস থেকে সেরা শিক্ষা প্রতিষ্ঠান হিসেবে স্বীকৃতি' },
+        { year: '২০২৩', title: '১০০% পাসের হার', description: 'এসএসসি পরীক্ষায় ১০০% পাসের হার অর্জন' },
+        { year: '২০২২', title: 'সাংস্কৃতিক প্রতিযোগিতায় চ্যাম্পিয়ন', description: 'জেলা পর্যায়ে সাংস্কৃতিক প্রতিযোগিতায় প্রথম স্থান' },
+        { year: '২০২১', title: 'ক্রীড়া প্রতিযোগিতায় সাফল্য', description: 'বিভাগীয় ক্রীড়া প্রতিযোগিতায় একাধিক স্বর্ণপদক' }
+      ],
+      aboutTeam: [],
+
+      // Home Page Slider Content
+      homeSliderSlides: [
+        {
+          id: '1',
+          title: 'আমার স্কুল',
+          subtitle: 'আধুনিক শিক্ষা ও প্রযুক্তির সমন্বয়',
+          bgGradient: 'from-blue-900 via-purple-900 to-teal-800',
+          aiText: 'AI',
+          aiSubtext: 'Smart Education',
+          order: 1,
+          isActive: true
+        },
+        {
+          id: '2',
+          title: 'ডিজিটাল শিক্ষা ব্যবস্থা',
+          subtitle: 'QR কোড এবং স্মার্ট উপস্থিতি ট্র্যাকিং',
+          bgGradient: 'from-green-900 via-emerald-900 to-cyan-800',
+          aiText: 'QR',
+          aiSubtext: 'Attendance System',
+          order: 2,
+          isActive: true
+        },
+        {
+          id: '3',
+          title: 'রিয়েল-টাইম ড্যাশবোর্ড',
+          subtitle: 'লাইভ মনিটরিং এবং পারফরমেন্স ট্র্যাকিং',
+          bgGradient: 'from-purple-900 via-pink-900 to-indigo-800',
+          aiText: 'DB',
+          aiSubtext: 'Real-time Reports',
+          order: 3,
+          isActive: true
+        }
+      ],
+
+      // Home Page Admission Section
+      homeAdmissionEnabled: true,
+      homeAdmissionTitle: 'ভর্তি চলছে সেশন ২০২৪',
+      homeAdmissionApplyNow: '🎓 আবেদন করুন এখনই',
+      homeAdmissionClasses: '৭ম-১০ম',
+      homeAdmissionClassesLabel: 'শ্রেণী সমূহ',
+      homeAdmissionOpen: 'খোলা',
+      homeAdmissionOpenLabel: 'আবেদন প্রক্রিয়া',
+      homeAdmissionDeadline: 'আবেদনের শেষ তারিখ: ৩০ ডিসেম্বর ২০২৪',
+      homeAdmissionAdmitNow: 'এখনই ভর্তি হন',
+      homeAdmissionOfficeHours: '০৮:০০ - ১৫:০০',
+      homeAdmissionContactPhone: '০১৭৮৮-৮৮৮৮',
+      homeAdmissionExperience: '১৫ বছর',
+
       // Notifications
       smtpServer: 'smtp.gmail.com',
       smtpPort: 587,
@@ -3762,14 +3645,55 @@ export const settingsQueries = {
       smtpPassword: '',
       studentRegistrationEmail: true,
       studentRegistrationPush: false,
+      studentRegistrationSMS: false,
       paymentReminderEmail: true,
       paymentReminderPush: true,
+      paymentReminderSMS: false,
       attendanceReportEmail: false,
       attendanceReportPush: true,
+      attendanceReportSMS: false,
       systemAlertEmail: true,
       systemAlertPush: true,
+      systemAlertSMS: false,
       examScheduleEmail: true,
       examSchedulePush: false,
+      examScheduleSMS: false,
+      examResultsEmail: true,
+      examResultsPush: true,
+      examResultsSMS: false,
+      homeworkAssignmentEmail: true,
+      homeworkAssignmentPush: true,
+      homeworkAssignmentSMS: false,
+      homeworkReminderEmail: true,
+      homeworkReminderPush: true,
+      homeworkReminderSMS: false,
+      classAnnouncementEmail: true,
+      classAnnouncementPush: true,
+      classAnnouncementSMS: false,
+      noticeNotificationEmail: true,
+      noticeNotificationPush: true,
+      noticeNotificationSMS: false,
+      eventReminderEmail: true,
+      eventReminderPush: true,
+      eventReminderSMS: false,
+      messageNotificationEmail: true,
+      messageNotificationPush: true,
+      messageNotificationSMS: false,
+      complaintResponseEmail: true,
+      complaintResponsePush: true,
+      complaintResponseSMS: false,
+      feePaymentConfirmationEmail: false,
+      feePaymentConfirmationPush: false,
+      feePaymentConfirmationSMS: false,
+      admissionConfirmationEmail: true,
+      admissionConfirmationPush: true,
+      admissionConfirmationSMS: false,
+      teacherAssignmentEmail: true,
+      teacherAssignmentPush: false,
+      teacherAssignmentSMS: false,
+      classScheduleEmail: false,
+      classSchedulePush: false,
+      classScheduleSMS: false,
 
       // System
       debugMode: false,
@@ -3845,8 +3769,7 @@ export const settingsQueries = {
   // Export system data
   async exportData(): Promise<string> {
     try {
-      // In a real implementation, this would export all system data
-      // For now, we'll return a mock export
+      // Export all system data
       const data = {
         settings: await this.getSettings(),
         exportDate: new Date().toISOString(),
@@ -3885,7 +3808,6 @@ export const settingsQueries = {
           total: superAdmins.length + admins.length + teachers.length + parents.length + students.length
         },
         classes: classes.length,
-        activeUsers: Math.floor(Math.random() * 100) + 50, // Mock data
         systemHealth: 'good',
         lastBackup: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2 hours ago
         storageUsed: 156, // GB
@@ -3903,5 +3825,623 @@ export const settingsQueries = {
   }
 };
 
-// Re-export student queries from separate file
-export { studentQueries };
+// Support Ticket Interface
+export interface SupportTicket {
+  id?: string;
+  title: string;
+  description: string;
+  userId?: string;
+  userName?: string;
+  userEmail?: string;
+  userType?: 'student' | 'teacher' | 'parent' | 'admin' | 'other';
+  category: 'technical' | 'payment' | 'data' | 'report' | 'other' | 'টেকনিক্যাল' | 'পেমেন্ট' | 'ডেটা' | 'রিপোর্ট' | 'অন্যান্য';
+  priority: 'high' | 'medium' | 'low' | 'উচ্চ' | 'মাঝারি' | 'নিম্ন';
+  status: 'open' | 'in_progress' | 'resolved' | 'closed' | 'খোলা' | 'প্রক্রিয়াধীন' | 'সমাধান' | 'বন্ধ';
+  schoolId: string;
+  assignedTo?: string;
+  assignedToName?: string;
+  attachments?: string[];
+  responses?: Array<{
+    userId: string;
+    userName: string;
+    message: string;
+    createdAt: Timestamp;
+  }>;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+  resolvedAt?: Timestamp;
+  resolvedBy?: string;
+}
+
+// Support Ticket Queries
+export const supportQueries = {
+  // Get all support tickets for a school
+  async getAllSupportTickets(schoolId: string): Promise<SupportTicket[]> {
+    try {
+      const q = query(
+        collection(db, 'supportTickets'),
+        where('schoolId', '==', schoolId),
+        orderBy('createdAt', 'desc')
+      );
+      const querySnapshot = await getDocs(q);
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      } as SupportTicket));
+    } catch (error) {
+      console.error('Error fetching support tickets:', error);
+      // If orderBy fails, try without it
+      try {
+        const q = query(
+          collection(db, 'supportTickets'),
+          where('schoolId', '==', schoolId)
+        );
+        const querySnapshot = await getDocs(q);
+        const tickets = querySnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        } as SupportTicket));
+        // Sort manually
+        tickets.sort((a, b) => {
+          const dateA = a.createdAt?.toMillis() || 0;
+          const dateB = b.createdAt?.toMillis() || 0;
+          return dateB - dateA;
+        });
+        return tickets;
+      } catch (fallbackError) {
+        console.error('Error fetching support tickets (fallback):', fallbackError);
+        return [];
+      }
+    }
+  },
+
+  // Get a single support ticket
+  async getSupportTicketById(ticketId: string): Promise<SupportTicket | null> {
+    try {
+      const docRef = doc(db, 'supportTickets', ticketId);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        return { id: docSnap.id, ...docSnap.data() } as SupportTicket;
+      }
+      return null;
+    } catch (error) {
+      console.error('Error fetching support ticket:', error);
+      return null;
+    }
+  },
+
+  // Create a new support ticket
+  async createSupportTicket(ticket: Omit<SupportTicket, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
+    try {
+      const ticketData = {
+        ...ticket,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+      const docRef = await addDoc(collection(db, 'supportTickets'), ticketData);
+      return docRef.id;
+    } catch (error) {
+      console.error('Error creating support ticket:', error);
+      throw error;
+    }
+  },
+
+  // Update a support ticket
+  async updateSupportTicket(ticketId: string, updates: Partial<SupportTicket>): Promise<void> {
+    try {
+      const docRef = doc(db, 'supportTickets', ticketId);
+      await updateDoc(docRef, {
+        ...updates,
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      console.error('Error updating support ticket:', error);
+      throw error;
+    }
+  },
+
+  // Add response to a support ticket
+  async addResponse(ticketId: string, response: {
+    userId: string;
+    userName: string;
+    message: string;
+  }): Promise<void> {
+    try {
+      const ticket = await this.getSupportTicketById(ticketId);
+      if (!ticket) throw new Error('Ticket not found');
+
+      const responses = ticket.responses || [];
+      responses.push({
+        ...response,
+        createdAt: serverTimestamp() as Timestamp
+      });
+
+      await this.updateSupportTicket(ticketId, { responses });
+    } catch (error) {
+      console.error('Error adding response:', error);
+      throw error;
+    }
+  },
+
+  // Real-time listener for support tickets
+  subscribeToSupportTickets(
+    schoolId: string,
+    callback: (tickets: SupportTicket[]) => void
+  ): Unsubscribe {
+    let unsubscribeFn: Unsubscribe | null = null;
+
+    try {
+      const q = query(
+        collection(db, 'supportTickets'),
+        where('schoolId', '==', schoolId),
+        orderBy('createdAt', 'desc')
+      );
+
+      unsubscribeFn = onSnapshot(q, (snapshot) => {
+        const tickets = snapshot.docs.map(doc =>
+          ({ id: doc.id, ...doc.data() } as SupportTicket)
+        );
+        callback(tickets);
+      }, (error) => {
+        console.error('Error listening to support tickets:', error);
+        // If orderBy fails, try without it
+        try {
+          const fallbackQ = query(
+            collection(db, 'supportTickets'),
+            where('schoolId', '==', schoolId)
+          );
+          if (unsubscribeFn) {
+            unsubscribeFn();
+          }
+          unsubscribeFn = onSnapshot(fallbackQ, (snapshot) => {
+            const tickets = snapshot.docs.map(doc =>
+              ({ id: doc.id, ...doc.data() } as SupportTicket)
+            );
+            // Sort manually
+            tickets.sort((a, b) => {
+              const dateA = a.createdAt?.toMillis() || 0;
+              const dateB = b.createdAt?.toMillis() || 0;
+              return dateB - dateA;
+            });
+            callback(tickets);
+          }, (fallbackError) => {
+            console.error('Error listening to support tickets (fallback):', fallbackError);
+            callback([]);
+          });
+        } catch (fallbackErr) {
+          console.error('Fallback listener setup failed:', fallbackErr);
+          callback([]);
+        }
+      });
+    } catch (error) {
+      console.error('Error setting up support tickets listener:', error);
+      // Try fallback query
+      try {
+        const fallbackQ = query(
+          collection(db, 'supportTickets'),
+          where('schoolId', '==', schoolId)
+        );
+        unsubscribeFn = onSnapshot(fallbackQ, (snapshot) => {
+          const tickets = snapshot.docs.map(doc =>
+            ({ id: doc.id, ...doc.data() } as SupportTicket)
+          );
+          tickets.sort((a, b) => {
+            const dateA = a.createdAt?.toMillis() || 0;
+            const dateB = b.createdAt?.toMillis() || 0;
+            return dateB - dateA;
+          });
+          callback(tickets);
+        }, (fallbackError) => {
+          console.error('Error in fallback listener:', fallbackError);
+          callback([]);
+        });
+      } catch (fallbackErr) {
+        console.error('Fallback listener setup failed:', fallbackErr);
+        callback([]);
+      }
+    }
+
+    return unsubscribeFn || (() => {});
+  }
+};
+
+// Contact Message Interface
+export interface ContactMessage {
+  id?: string;
+  name: string;
+  email: string;
+  phone?: string;
+  subject: string;
+  message: string;
+  schoolId: string;
+  status: 'new' | 'read' | 'replied' | 'archived';
+  read: boolean;
+  repliedAt?: Timestamp;
+  repliedBy?: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+// Contact Message Queries
+export const contactMessageQueries = {
+  // Get all contact messages for a school
+  async getAllContactMessages(schoolId: string): Promise<ContactMessage[]> {
+    try {
+      const q = query(
+        collection(db, 'contactMessages'),
+        where('schoolId', '==', schoolId),
+        orderBy('createdAt', 'desc')
+      );
+      const querySnapshot = await getDocs(q);
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      } as ContactMessage));
+    } catch (error) {
+      console.error('Error fetching contact messages:', error);
+      // If orderBy fails, try without it
+      try {
+        const q = query(
+          collection(db, 'contactMessages'),
+          where('schoolId', '==', schoolId)
+        );
+        const querySnapshot = await getDocs(q);
+        const messages = querySnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        } as ContactMessage));
+        // Sort manually
+        messages.sort((a, b) => {
+          const dateA = a.createdAt?.toMillis() || 0;
+          const dateB = b.createdAt?.toMillis() || 0;
+          return dateB - dateA;
+        });
+        return messages;
+      } catch (fallbackError) {
+        console.error('Error fetching contact messages (fallback):', fallbackError);
+        return [];
+      }
+    }
+  },
+
+  // Get a single contact message
+  async getContactMessageById(messageId: string): Promise<ContactMessage | null> {
+    try {
+      const docRef = doc(db, 'contactMessages', messageId);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        return { id: docSnap.id, ...docSnap.data() } as ContactMessage;
+      }
+      return null;
+    } catch (error) {
+      console.error('Error fetching contact message:', error);
+      return null;
+    }
+  },
+
+  // Mark message as read
+  async markAsRead(messageId: string, userId?: string): Promise<void> {
+    try {
+      const docRef = doc(db, 'contactMessages', messageId);
+      await updateDoc(docRef, {
+        read: true,
+        status: 'read',
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      console.error('Error marking message as read:', error);
+      throw error;
+    }
+  },
+
+  // Update message status
+  async updateMessageStatus(messageId: string, status: ContactMessage['status'], userId?: string): Promise<void> {
+    try {
+      const docRef = doc(db, 'contactMessages', messageId);
+      const updateData: any = {
+        status,
+        updatedAt: serverTimestamp()
+      };
+      
+      if (status === 'replied' && userId) {
+        updateData.repliedAt = serverTimestamp();
+        updateData.repliedBy = userId;
+      }
+      
+      await updateDoc(docRef, updateData);
+    } catch (error) {
+      console.error('Error updating message status:', error);
+      throw error;
+    }
+  },
+
+  // Real-time listener for contact messages
+  subscribeToContactMessages(
+    schoolId: string,
+    callback: (messages: ContactMessage[]) => void
+  ): Unsubscribe {
+    let unsubscribeFn: Unsubscribe | null = null;
+
+    try {
+      const q = query(
+        collection(db, 'contactMessages'),
+        where('schoolId', '==', schoolId),
+        orderBy('createdAt', 'desc')
+      );
+
+      unsubscribeFn = onSnapshot(q, (snapshot) => {
+        const messages = snapshot.docs.map(doc =>
+          ({ id: doc.id, ...doc.data() } as ContactMessage)
+        );
+        callback(messages);
+      }, (error) => {
+        console.error('Error listening to contact messages:', error);
+        // If orderBy fails, try without it
+        try {
+          const fallbackQ = query(
+            collection(db, 'contactMessages'),
+            where('schoolId', '==', schoolId)
+          );
+          if (unsubscribeFn) {
+            unsubscribeFn();
+          }
+          unsubscribeFn = onSnapshot(fallbackQ, (snapshot) => {
+            const messages = snapshot.docs.map(doc =>
+              ({ id: doc.id, ...doc.data() } as ContactMessage)
+            );
+            // Sort manually
+            messages.sort((a, b) => {
+              const dateA = a.createdAt?.toMillis() || 0;
+              const dateB = b.createdAt?.toMillis() || 0;
+              return dateB - dateA;
+            });
+            callback(messages);
+          }, (fallbackError) => {
+            console.error('Error listening to contact messages (fallback):', fallbackError);
+            callback([]);
+          });
+        } catch (fallbackErr) {
+          console.error('Fallback listener setup failed:', fallbackErr);
+          callback([]);
+        }
+      });
+    } catch (error) {
+      console.error('Error setting up contact messages listener:', error);
+      // Try fallback query
+      try {
+        const fallbackQ = query(
+          collection(db, 'contactMessages'),
+          where('schoolId', '==', schoolId)
+        );
+        unsubscribeFn = onSnapshot(fallbackQ, (snapshot) => {
+          const messages = snapshot.docs.map(doc =>
+            ({ id: doc.id, ...doc.data() } as ContactMessage)
+          );
+          messages.sort((a, b) => {
+            const dateA = a.createdAt?.toMillis() || 0;
+            const dateB = b.createdAt?.toMillis() || 0;
+            return dateB - dateA;
+          });
+          callback(messages);
+        }, (fallbackError) => {
+          console.error('Error in fallback listener:', fallbackError);
+          callback([]);
+        });
+      } catch (fallbackErr) {
+        console.error('Fallback listener setup failed:', fallbackErr);
+        callback([]);
+      }
+    }
+
+    return unsubscribeFn || (() => {});
+  }
+};
+
+// Event Interface
+export interface Event {
+  id?: string;
+  title: string;
+  description: string;
+  date: string; // YYYY-MM-DD format
+  startTime?: string; // HH:mm format
+  endTime?: string; // HH:mm format
+  time?: string; // Display time (e.g., "09:00 - 17:00")
+  location?: string;
+  category: 'ক্রীড়া' | 'শিক্ষা' | 'সভা' | 'সাংস্কৃতিক' | 'শিক্ষা সফর' | 'অন্যান্য' | 'sports' | 'education' | 'meeting' | 'cultural' | 'field_trip' | 'other';
+  status: 'আসছে' | 'সম্পন্ন' | 'পরিকল্পনা' | 'ongoing' | 'completed' | 'planning' | 'cancelled';
+  participants?: number;
+  organizer?: string;
+  organizerId?: string;
+  schoolId: string;
+  imageUrl?: string;
+  attachments?: string[];
+  isPublic?: boolean;
+  targetAudience?: 'all' | 'students' | 'teachers' | 'parents' | 'staff';
+  classes?: string[]; // Specific classes if applicable
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+  createdBy?: string;
+}
+
+// Event Queries
+export const eventQueries = {
+  // Get all events for a school
+  async getAllEvents(schoolId: string): Promise<Event[]> {
+    try {
+      const q = query(
+        collection(db, 'events'),
+        where('schoolId', '==', schoolId),
+        orderBy('date', 'desc')
+      );
+      const querySnapshot = await getDocs(q);
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      } as Event));
+    } catch (error) {
+      console.error('Error fetching events:', error);
+      // If orderBy fails, try without it
+      try {
+        const q = query(
+          collection(db, 'events'),
+          where('schoolId', '==', schoolId)
+        );
+        const querySnapshot = await getDocs(q);
+        const events = querySnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        } as Event));
+        // Sort manually by date
+        events.sort((a, b) => {
+          const dateA = new Date(a.date).getTime();
+          const dateB = new Date(b.date).getTime();
+          return dateB - dateA; // Descending order
+        });
+        return events;
+      } catch (fallbackError) {
+        console.error('Error fetching events (fallback):', fallbackError);
+        return [];
+      }
+    }
+  },
+
+  // Get a single event
+  async getEventById(eventId: string): Promise<Event | null> {
+    try {
+      const docRef = doc(db, 'events', eventId);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        return { id: docSnap.id, ...docSnap.data() } as Event;
+      }
+      return null;
+    } catch (error) {
+      console.error('Error fetching event:', error);
+      return null;
+    }
+  },
+
+  // Create a new event
+  async createEvent(event: Omit<Event, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
+    try {
+      const eventData = {
+        ...event,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+      const docRef = await addDoc(collection(db, 'events'), eventData);
+      return docRef.id;
+    } catch (error) {
+      console.error('Error creating event:', error);
+      throw error;
+    }
+  },
+
+  // Update an event
+  async updateEvent(eventId: string, updates: Partial<Event>): Promise<void> {
+    try {
+      const docRef = doc(db, 'events', eventId);
+      await updateDoc(docRef, {
+        ...updates,
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      console.error('Error updating event:', error);
+      throw error;
+    }
+  },
+
+  // Delete an event
+  async deleteEvent(eventId: string): Promise<void> {
+    try {
+      const docRef = doc(db, 'events', eventId);
+      await deleteDoc(docRef);
+    } catch (error) {
+      console.error('Error deleting event:', error);
+      throw error;
+    }
+  },
+
+  // Real-time listener for events
+  subscribeToEvents(
+    schoolId: string,
+    callback: (events: Event[]) => void
+  ): Unsubscribe {
+    let unsubscribeFn: Unsubscribe | null = null;
+
+    try {
+      const q = query(
+        collection(db, 'events'),
+        where('schoolId', '==', schoolId),
+        orderBy('date', 'desc')
+      );
+
+      unsubscribeFn = onSnapshot(q, (snapshot) => {
+        const events = snapshot.docs.map(doc =>
+          ({ id: doc.id, ...doc.data() } as Event)
+        );
+        callback(events);
+      }, (error) => {
+        console.error('Error listening to events:', error);
+        // If orderBy fails, try without it
+        try {
+          const fallbackQ = query(
+            collection(db, 'events'),
+            where('schoolId', '==', schoolId)
+          );
+          if (unsubscribeFn) {
+            unsubscribeFn();
+          }
+          unsubscribeFn = onSnapshot(fallbackQ, (snapshot) => {
+            const events = snapshot.docs.map(doc =>
+              ({ id: doc.id, ...doc.data() } as Event)
+            );
+            // Sort manually by date
+            events.sort((a, b) => {
+              const dateA = new Date(a.date).getTime();
+              const dateB = new Date(b.date).getTime();
+              return dateB - dateA; // Descending order
+            });
+            callback(events);
+          }, (fallbackError) => {
+            console.error('Error listening to events (fallback):', fallbackError);
+            callback([]);
+          });
+        } catch (fallbackErr) {
+          console.error('Fallback listener setup failed:', fallbackErr);
+          callback([]);
+        }
+      });
+    } catch (error) {
+      console.error('Error setting up events listener:', error);
+      // Try fallback query
+      try {
+        const fallbackQ = query(
+          collection(db, 'events'),
+          where('schoolId', '==', schoolId)
+        );
+        unsubscribeFn = onSnapshot(fallbackQ, (snapshot) => {
+          const events = snapshot.docs.map(doc =>
+            ({ id: doc.id, ...doc.data() } as Event)
+          );
+          events.sort((a, b) => {
+            const dateA = new Date(a.date).getTime();
+            const dateB = new Date(b.date).getTime();
+            return dateB - dateA;
+          });
+          callback(events);
+        }, (fallbackError) => {
+          console.error('Error in fallback listener:', fallbackError);
+          callback([]);
+        });
+      } catch (fallbackErr) {
+        console.error('Fallback listener setup failed:', fallbackErr);
+        callback([]);
+      }
+    }
+
+    return unsubscribeFn || (() => {});
+  }
+};
+
+// Re-export queries from separate files
+export { studentQueries, teacherQueries, parentQueries, feeQueries };

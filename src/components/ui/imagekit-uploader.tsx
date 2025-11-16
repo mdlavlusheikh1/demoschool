@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useRef } from 'react';
-import { uploadStudentPhoto, uploadTeacherPhoto, uploadSchoolLogo, uploadDocument, transformImageUrl, IMAGEKIT_FOLDERS } from '@/lib/imagekit-utils';
 import { Upload, Image as ImageIcon, FileText, User, School } from 'lucide-react';
 
 interface ImageKitUploaderProps {
@@ -98,39 +97,116 @@ export default function ImageKitUploader({
       return;
     }
 
+    const publicKey = process.env.NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY;
+    if (!publicKey) {
+      showToast('ImageKit public key অনুপস্থিত', 'error');
+      return;
+    }
+
     setIsUploading(true);
     setError('');
     setSuccess('');
 
     try {
-      let uploadedFile;
+      // Get authentication parameters from the API
+      console.log('🔐 Requesting ImageKit authentication...');
+      const authResponse = await fetch('/api/imagekit');
+      console.log('🔐 Auth response status:', authResponse.status);
 
-      switch (type) {
-        case 'student':
-          uploadedFile = await uploadStudentPhoto(file, userId!, schoolId);
-          break;
-        case 'teacher':
-          uploadedFile = await uploadTeacherPhoto(file, userId!, schoolId);
-          break;
-        case 'school':
-          uploadedFile = await uploadSchoolLogo(file, schoolId);
-          break;
-        case 'document':
-          uploadedFile = await uploadDocument(file, 'document', userId!, schoolId);
-          break;
-        default:
-          throw new Error('অজানা আপলোড টাইপ');
+      if (!authResponse.ok) {
+        const errorText = await authResponse.text();
+        console.error('❌ Auth failed:', authResponse.status, errorText);
+        throw new Error(`Failed to get authentication parameters (${authResponse.status}): ${errorText}`);
       }
+
+      const authParams = await authResponse.json();
+      console.log('🔐 Auth params received:', {
+        hasToken: !!authParams.token,
+        hasSignature: !!authParams.signature,
+        hasExpire: !!authParams.expire
+      });
+
+      // Validate auth params
+      if (!authParams.token || !authParams.signature || !authParams.expire) {
+        throw new Error('Invalid authentication parameters received from server');
+      }
+
+      // Create FormData for upload
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('fileName', `${type}-${userId || schoolId}-${Date.now()}`);
+      formData.append('folder', getFolderPath(type, schoolId, userId));
+      formData.append('token', authParams.token);
+      formData.append('expire', authParams.expire.toString());
+      formData.append('signature', authParams.signature);
+      formData.append('publicKey', publicKey);
+
+      console.log('📤 Uploading to ImageKit...', {
+        fileName: `${type}-${userId || schoolId}-${Date.now()}`,
+        folder: getFolderPath(type, schoolId, userId),
+        fileSize: file.size
+      });
+
+      // Upload using ImageKit REST API
+      const uploadResponse = await fetch(`https://upload.imagekit.io/api/v1/files/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      console.log('📤 Upload response status:', uploadResponse.status);
+
+      if (!uploadResponse.ok) {
+        const errorData = await uploadResponse.text();
+        console.error('❌ Upload failed:', uploadResponse.status, errorData);
+        throw new Error(`Upload failed (${uploadResponse.status}): ${errorData}`);
+      }
+
+      const result = await uploadResponse.json();
+      console.log('✅ Upload successful:', {
+        fileId: result.fileId,
+        name: result.name,
+        url: result.url
+      });
+
+      // Transform the result to match our expected format
+      const uploadedFile = {
+        fileId: result.fileId,
+        name: result.name,
+        url: result.url,
+        thumbnailUrl: result.thumbnailUrl || result.url,
+        height: result.height || 0,
+        width: result.width || 0,
+        size: result.size,
+        type: result.fileType,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
 
       setUploadedFile(uploadedFile);
       onUploadSuccess?.(uploadedFile);
       showToast('ফাইল সফলভাবে আপলোড হয়েছে', 'success');
 
     } catch (error) {
-      console.error('Upload error:', error);
-      showToast(error instanceof Error ? error.message : 'অজানা ত্রুটি ঘটেছে', 'error');
+      console.error('🚨 Upload error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'অজানা ত্রুটি ঘটেছে';
+      showToast(`ImageKit upload failed: ${errorMessage}`, 'error');
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const getFolderPath = (type: string, schoolId: string, userId?: string) => {
+    switch (type) {
+      case 'student':
+        return `/school-management/students/${schoolId}`;
+      case 'teacher':
+        return `/school-management/teachers/${schoolId}`;
+      case 'school':
+        return '/school-management/school-logos';
+      case 'document':
+        return `/school-management/documents/${schoolId}`;
+      default:
+        return '/school-management/documents';
     }
   };
 
@@ -198,13 +274,7 @@ export default function ImageKitUploader({
             {uploadedFile.type.startsWith('image/') && (
               <div className="mt-2">
                 <img
-                  src={transformImageUrl(uploadedFile.url, {
-                    width: 200,
-                    height: 200,
-                    crop: 'maintain_ratio',
-                    format: 'webp',
-                    quality: 80
-                  })}
+                  src={uploadedFile.url}
                   alt="Uploaded preview"
                   className="rounded-lg border max-w-[200px] shadow-sm"
                 />

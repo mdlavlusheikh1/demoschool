@@ -1,6 +1,6 @@
 @echo off
 echo 🚀 Deploying Firestore indexes to Firebase...
-echo Project: iqna-landing
+echo Project: iqra-nuranu-academy
 echo.
 
 REM Check if Firebase CLI is installed
@@ -22,11 +22,11 @@ if errorlevel 1 (
 )
 
 REM Set the project
-echo 📋 Setting Firebase project to iqna-landing...
-firebase use iqna-landing
+echo 📋 Setting Firebase project to iqra-nuranu-academy...
+firebase use iqra-nuranu-academy
 
 if errorlevel 1 (
-    echo ❌ Failed to set project. Make sure you have access to iqna-landing project.
+    echo ❌ Failed to set project. Make sure you have access to iqra-nuranu-academy project.
     echo Available projects:
     firebase projects:list
     pause
@@ -51,7 +51,7 @@ if %errorlevel% equ 0 (
     echo    • attendanceSessions collection
     echo.
     echo 🔗 You can view the indexes in Firebase Console:
-    echo    https://console.firebase.google.com/project/iqna-landing/firestore/indexes
+    echo    https://console.firebase.google.com/project/iqra-nuranu-academy/firestore/indexes
     echo.
     echo ⚠️  Note: It may take a few minutes for indexes to be built.
 ) else (

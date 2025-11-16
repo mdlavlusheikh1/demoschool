@@ -7,24 +7,34 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "vercel-build": "next build"
+    "vercel-build": "next build",
+    "migrate-school-code": "node scripts/utils/update-school-code.js",
+    "deploy": "node deploy-vercel.js",
+    "deploy:vercel": "vercel",
+    "deploy:prod": "vercel --prod",
+    "deploy:windows": "deploy-vercel.bat"
   },
   "dependencies": {
     "@types/qrcode": "^1.5.5",
     "@types/uuid": "^10.0.0",
     "date-fns": "^4.1.0",
+    "docx": "^9.5.1",
+    "file-saver": "^2.0.5",
     "firebase": "^12.3.0",
     "firebase-admin": "^13.5.0",
     "framer-motion": "^12.23.21",
+    "html2canvas": "^1.4.1",
     "html5-qrcode": "^2.3.8",
     "imagekit": "^6.0.0",
     "imagekitio-react": "^4.3.0",
+    "jspdf": "^3.0.3",
     "lucide-react": "^0.544.0",
     "next": "15.5.4",
     "qrcode": "^1.5.4",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

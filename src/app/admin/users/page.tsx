@@ -254,13 +254,6 @@ export default function UserManagement() {
                 <Database className="w-5 h-5" />
                 <span>ডেটা ম্যানেজার</span>
               </a>
-              <a
-                href="/admin/promote"
-                className="flex items-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-              >
-                <Shield className="w-5 h-5" />
-                <span>প্রমোট ইউজার</span>
-              </a>
             </div>
           )}
         </div>

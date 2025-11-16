@@ -4,14 +4,26 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { User, onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { inventoryQueries, InventoryItem, InventoryAlert, StockMovement, accountingQueries } from '@/lib/database-queries';
+import { inventoryQueries, InventoryItem, InventoryAlert, StockMovement, accountingQueries, classQueries } from '@/lib/database-queries';
 import { SCHOOL_ID } from '@/lib/constants';
 import {
   Home, Users, BookOpen, ClipboardList, Calendar, Settings, LogOut, Menu, X,
   UserCheck, GraduationCap, Building, CreditCard, TrendingUp, Search, Bell,
-  Plus, Package, AlertTriangle, CheckCircle, BarChart, RefreshCw, Eye, Edit, Trash2
+  Plus, Package, AlertTriangle, CheckCircle,   BarChart, RefreshCw, Eye, Edit, Trash2,
+  Globe,
+  FileText,
+  Award,
+  MessageSquare,
+  Gift,
+  Sparkles,
+  AlertCircle,
+  BookOpen as BookOpenIcon,
+  Users as UsersIcon,
+  Save,
 } from 'lucide-react';
+import Modal from '@/components/ui/modal';
 
 function InventoryPage() {
   const [user, setUser] = useState<User | null>(null);
@@ -47,7 +59,39 @@ function InventoryPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(5);
+  const [showAddStockModal, setShowAddStockModal] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [classes, setClasses] = useState<Array<{ classId?: string; className: string; section: string }>>([]);
+  const [imageError, setImageError] = useState(false);
   const router = useRouter();
+  const { userData } = useAuth();
+
+  // Form state for add stock
+  const [formData, setFormData] = useState({
+    name: '',
+    nameEn: '',
+    category: '',
+    subcategory: '',
+    quantity: 0,
+    minQuantity: 0,
+    unit: '',
+    unitPrice: 0,
+    sellingPrice: 0,
+    supplier: '',
+    supplierContact: '',
+    assignedClass: '',
+    status: 'active' as const,
+    condition: 'new' as const,
+    isSet: false,
+    setItems: [] as string[],
+    notes: ''
+  });
+
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
 
   // Initialize Firebase data
   useEffect(() => {
@@ -55,6 +99,7 @@ function InventoryPage() {
       if (user) {
         setUser(user);
         loadInventoryData();
+        setupClassesListener();
       } else {
         router.push('/auth/login');
       }
@@ -62,6 +107,27 @@ function InventoryPage() {
     });
     return () => unsubscribe();
   }, [router]);
+
+  // Setup real-time listener for classes
+  const setupClassesListener = () => {
+    try {
+      const schoolId = SCHOOL_ID;
+      const unsubscribe = classQueries.subscribeToClassesBySchool(
+        schoolId,
+        (classesData) => {
+          setClasses(classesData);
+        },
+        (error) => {
+          console.error('Error in classes listener:', error);
+          setClasses([]);
+        }
+      );
+      return unsubscribe;
+    } catch (error) {
+      console.error('Error setting up classes listener:', error);
+      setClasses([]);
+    }
+  };
 
   // Load initial inventory data
   const loadInventoryData = async () => {
@@ -226,6 +292,102 @@ function InventoryPage() {
     setCurrentPage(1);
   }, [searchTerm]);
 
+  // Quick select items
+  const quickSelectItems = [
+    { name: 'বই', nameEn: 'Book', category: 'পাঠ্যবই', unit: 'পিস' },
+    { name: 'স্লেট', nameEn: 'Slate', category: 'স্টেশনারি', unit: 'পিস' },
+    { name: 'খাতা', nameEn: 'Notebook', category: 'স্টেশনারি', unit: 'পিস' },
+    { name: 'চক', nameEn: 'Chalk', category: 'স্টেশনারি', unit: 'বক্স' },
+    { name: 'পেন্সিল', nameEn: 'Pencil', category: 'স্টেশনারি', unit: 'পিস' },
+    { name: 'ব্রাশ/ডাস্টার', nameEn: 'Brush/Duster', category: 'স্টেশনারি', unit: 'পিস' },
+    { name: 'ইরেজার/রাবার', nameEn: 'Eraser/Rubber', category: 'স্টেশনারি', unit: 'পিস' },
+    { name: 'কাটার', nameEn: 'Cutter', category: 'স্টেশনারি', unit: 'পিস' }
+  ];
+
+  const categories = [
+    'স্টেশনারি',
+    'পাঠ্যবই',
+    'সেট',
+    'ইলেকট্রনিক্স',
+    'সরঞ্জাম',
+    'খেলনা'
+  ];
+
+  const units = [
+    'পিস',
+    'বক্স',
+    'প্যাকেট',
+    'ডজন',
+    'সেট',
+    'লিটার',
+    'কেজি'
+  ];
+
+  const handleQuickSelect = (item: typeof quickSelectItems[0]) => {
+    setFormData(prev => ({
+      ...prev,
+      name: item.name,
+      nameEn: item.nameEn,
+      category: item.category,
+      unit: item.unit
+    }));
+  };
+
+  const handleAddStockSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!formData.name || !formData.category || !formData.unit || formData.quantity <= 0 || formData.unitPrice <= 0) {
+      alert('অনুগ্রহ করে সকল আবশ্যকীয় ফিল্ড পূরণ করুন!');
+      return;
+    }
+
+    try {
+      setSaving(true);
+
+      const inventoryItem: Omit<InventoryItem, 'id' | 'createdAt' | 'updatedAt'> = {
+        ...formData,
+        schoolId: SCHOOL_ID,
+        createdBy: user?.uid || 'admin'
+      };
+
+      await inventoryQueries.createInventoryItem(inventoryItem);
+
+      // Show success modal
+      setShowSuccessModal(true);
+      setShowAddStockModal(false);
+
+      // Reset form
+      setFormData({
+        name: '',
+        nameEn: '',
+        category: '',
+        subcategory: '',
+        quantity: 0,
+        minQuantity: 0,
+        unit: '',
+        unitPrice: 0,
+        sellingPrice: 0,
+        supplier: '',
+        supplierContact: '',
+        assignedClass: '',
+        status: 'active',
+        condition: 'new',
+        isSet: false,
+        setItems: [],
+        notes: ''
+      });
+
+      // Reload inventory data
+      await loadInventoryData();
+
+    } catch (error) {
+      console.error('Error saving inventory item:', error);
+      alert('পণ্য যোগ করতে ত্রুটি হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // Get status in Bengali
   const getStatusInBengali = (item: InventoryItem) => {
     if (item.quantity === 0) return 'স্টক শেষ';
@@ -257,17 +419,20 @@ function InventoryPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: true },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -284,7 +449,7 @@ function InventoryPage() {
       description: 'নতুন পণ্য যোগ করুন',
       icon: Plus,
       color: 'green',
-      href: '/admin/inventory/add-stock'
+      onClick: () => setShowAddStockModal(true)
     },
     {
       title: 'কম স্টক রিপোর্ট',
@@ -364,8 +529,21 @@ function InventoryPage() {
                   নমুনা ডেটা
                 </button>
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">{user?.email?.charAt(0).toUpperCase()}</span>
+                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                  {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                    <img
+                      src={(userData as any)?.photoURL || user?.photoURL || ''}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => {
+                        setImageError(true);
+                      }}
+                    />
+                  ) : (
+                    <span className="text-white font-medium text-sm">
+                      {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -442,21 +620,39 @@ function InventoryPage() {
             <h2 className="text-xl font-semibold text-gray-900 mb-4">দ্রুত অ্যাকশন</h2>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {quickActions.map((action, index) => (
-                <a 
-                  key={index} 
-                  href={action.href}
-                  className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow"
-                >
-                  <div className="flex items-center space-x-4">
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center ${action.color === 'blue' ? 'bg-blue-100' : action.color === 'green' ? 'bg-green-100' : 'bg-yellow-100'}`}>
-                      <action.icon className={`w-6 h-6 ${action.color === 'blue' ? 'text-blue-600' : action.color === 'green' ? 'text-green-600' : 'text-yellow-600'}`} />
+                action.href ? (
+                  <a 
+                    key={index} 
+                    href={action.href}
+                    className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow cursor-pointer"
+                  >
+                    <div className="flex items-center space-x-4">
+                      <div className={`w-12 h-12 rounded-full flex items-center justify-center ${action.color === 'blue' ? 'bg-blue-100' : action.color === 'green' ? 'bg-green-100' : 'bg-yellow-100'}`}>
+                        <action.icon className={`w-6 h-6 ${action.color === 'blue' ? 'text-blue-600' : action.color === 'green' ? 'text-green-600' : 'text-yellow-600'}`} />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-gray-900">{action.title}</h3>
+                        <p className="text-sm text-gray-600">{action.description}</p>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="font-semibold text-gray-900">{action.title}</h3>
-                      <p className="text-sm text-gray-600">{action.description}</p>
+                  </a>
+                ) : (
+                  <button
+                    key={index}
+                    onClick={action.onClick}
+                    className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow cursor-pointer text-left w-full"
+                  >
+                    <div className="flex items-center space-x-4">
+                      <div className={`w-12 h-12 rounded-full flex items-center justify-center ${action.color === 'blue' ? 'bg-blue-100' : action.color === 'green' ? 'bg-green-100' : 'bg-yellow-100'}`}>
+                        <action.icon className={`w-6 h-6 ${action.color === 'blue' ? 'text-blue-600' : action.color === 'green' ? 'text-green-600' : 'text-yellow-600'}`} />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-gray-900">{action.title}</h3>
+                        <p className="text-sm text-gray-600">{action.description}</p>
+                      </div>
                     </div>
-                  </div>
-                </a>
+                  </button>
+                )
               ))}
             </div>
           </div>
@@ -608,6 +804,319 @@ function InventoryPage() {
           </div>
         </div>
       </div>
+
+      {/* Add Stock Modal */}
+      <Modal
+        isOpen={showAddStockModal}
+        onClose={() => {
+          setShowAddStockModal(false);
+          // Reset form when closing
+          setFormData({
+            name: '',
+            nameEn: '',
+            category: '',
+            subcategory: '',
+            quantity: 0,
+            minQuantity: 0,
+            unit: '',
+            unitPrice: 0,
+            sellingPrice: 0,
+            supplier: '',
+            supplierContact: '',
+            assignedClass: '',
+            status: 'active',
+            condition: 'new',
+            isSet: false,
+            setItems: [],
+            notes: ''
+          });
+        }}
+        title="নতুন মজুদ যোগ করুন"
+        subtitle="ইনভেন্টরিতে নতুন পণ্য যোগ করুন"
+        size="2xl"
+        footer={
+          <div className="flex justify-end space-x-3">
+            <button
+              onClick={() => {
+                setShowAddStockModal(false);
+                setFormData({
+                  name: '',
+                  nameEn: '',
+                  category: '',
+                  subcategory: '',
+                  quantity: 0,
+                  minQuantity: 0,
+                  unit: '',
+                  unitPrice: 0,
+                  sellingPrice: 0,
+                  supplier: '',
+                  supplierContact: '',
+                  assignedClass: '',
+                  status: 'active',
+                  condition: 'new',
+                  isSet: false,
+                  setItems: [],
+                  notes: ''
+                });
+              }}
+              className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+            >
+              বাতিল করুন
+            </button>
+            <button
+              onClick={handleAddStockSubmit}
+              disabled={saving}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+            >
+              {saving ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>সংরক্ষণ হচ্ছে...</span>
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4" />
+                  <span>পণ্য সংরক্ষণ করুন</span>
+                </>
+              )}
+            </button>
+          </div>
+        }
+      >
+        <form onSubmit={handleAddStockSubmit} className="space-y-6">
+          {/* Quick Select Items */}
+          <div>
+            <h4 className="text-md font-medium text-gray-900 mb-4">দ্রুত নির্বাচন</h4>
+            <p className="text-sm text-gray-600 mb-3">সাধারণ পণ্য দ্রুত নির্বাচন করুন:</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {quickSelectItems.map((item, index) => (
+                <button
+                  key={index}
+                  type="button"
+                  onClick={() => handleQuickSelect(item)}
+                  className="p-3 border border-gray-200 rounded-lg hover:bg-blue-50 hover:border-blue-300 text-left transition-colors"
+                >
+                  <div className="text-sm font-medium text-gray-900">{item.name}</div>
+                  <div className="text-xs text-gray-500">{item.nameEn}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Basic Information */}
+          <div>
+            <h4 className="text-md font-medium text-gray-900 mb-4">মৌলিক তথ্য</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">পণ্যের নাম *</label>
+                <input
+                  type="text"
+                  value={formData.name}
+                  onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="পণ্যের নাম লিখুন"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">পণ্যের ইংরেজি নাম</label>
+                <input
+                  type="text"
+                  value={formData.nameEn}
+                  onChange={(e) => setFormData(prev => ({ ...prev, nameEn: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Product name in English"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Category and Details */}
+          <div>
+            <h4 className="text-md font-medium text-gray-900 mb-4">বিভাগ ও বিবরণ</h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">বিভাগ *</label>
+                <select
+                  value={formData.category}
+                  onChange={(e) => setFormData(prev => ({ ...prev, category: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                >
+                  <option value="">বিভাগ নির্বাচন করুন</option>
+                  {categories.map((category) => (
+                    <option key={category} value={category}>{category}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">ক্লাস</label>
+                <select
+                  value={formData.assignedClass}
+                  onChange={(e) => setFormData(prev => ({ ...prev, assignedClass: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">ক্লাস নির্বাচন করুন</option>
+                  {classes.length > 0 ? (
+                    classes.map((classItem) => (
+                      <option key={classItem.classId} value={classItem.className}>
+                        {classItem.className} - {classItem.section}
+                      </option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="প্লে">প্লে</option>
+                      <option value="নার্সারি">নার্সারি</option>
+                      <option value="প্রথম">প্রথম</option>
+                      <option value="দ্বিতীয়">দ্বিতীয়</option>
+                      <option value="তৃতীয়">তৃতীয়</option>
+                      <option value="চতুর্থ">চতুর্থ</option>
+                      <option value="পঞ্চম">পঞ্চম</option>
+                      <option value="ষষ্ঠ">ষষ্ঠ</option>
+                    </>
+                  )}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">একক *</label>
+                <select
+                  value={formData.unit}
+                  onChange={(e) => setFormData(prev => ({ ...prev, unit: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                >
+                  <option value="">একক নির্বাচন করুন</option>
+                  {units.map((unit) => (
+                    <option key={unit} value={unit}>{unit}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">পরিমাণ *</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={formData.quantity}
+                  onChange={(e) => setFormData(prev => ({ ...prev, quantity: parseInt(e.target.value) || 0 }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="পরিমাণ"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">ন্যূনতম স্টক</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={formData.minQuantity}
+                  onChange={(e) => setFormData(prev => ({ ...prev, minQuantity: parseInt(e.target.value) || 0 }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="ন্যূনতম স্টক"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Pricing */}
+          <div>
+            <h4 className="text-md font-medium text-gray-900 mb-4">মূল্য নির্ধারণ</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">ক্রয় মূল্য (একক) *</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500">৳</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={formData.unitPrice}
+                    onChange={(e) => setFormData(prev => ({ ...prev, unitPrice: parseFloat(e.target.value) || 0 }))}
+                    className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="0.00"
+                    required
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">বিক্রয় মূল্য (একক)</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500">৳</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={formData.sellingPrice}
+                    onChange={(e) => setFormData(prev => ({ ...prev, sellingPrice: parseFloat(e.target.value) || 0 }))}
+                    className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="0.00"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Supplier */}
+          <div>
+            <h4 className="text-md font-medium text-gray-900 mb-4">সরবরাহকারী</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">সরবরাহকারীর নাম</label>
+                <input
+                  type="text"
+                  value={formData.supplier}
+                  onChange={(e) => setFormData(prev => ({ ...prev, supplier: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="সরবরাহকারীর নাম"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">যোগাযোগ নম্বর</label>
+                <input
+                  type="text"
+                  value={formData.supplierContact}
+                  onChange={(e) => setFormData(prev => ({ ...prev, supplierContact: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="যোগাযোগ নম্বর"
+                />
+              </div>
+            </div>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Success Modal */}
+      <Modal
+        isOpen={showSuccessModal}
+        onClose={() => {
+          setShowSuccessModal(false);
+        }}
+        title="পণ্য সফলভাবে যোগ করা হয়েছে"
+        subtitle="নতুন পণ্যটি ইনভেন্টরিতে সংরক্ষণ করা হয়েছে"
+        size="md"
+        footer={
+          <div className="flex justify-end">
+            <button
+              onClick={() => {
+                setShowSuccessModal(false);
+              }}
+              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              ঠিক আছে
+            </button>
+          </div>
+        }
+      >
+        <div className="text-center py-4">
+          <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Package className="w-8 h-8 text-green-600" />
+          </div>
+          <p className="text-gray-600 mb-2">
+            পণ্যটি সফলভাবে ইনভেন্টরিতে যোগ করা হয়েছে।
+          </p>
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -1,15 +1,19 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { auth, db } from '@/lib/firebase';
-import { User, onAuthStateChanged } from 'firebase/auth';
+import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { SystemSettings, settingsQueries, classQueries } from '@/lib/database-queries';
+import { SystemSettings, settingsQueries, classQueries, User } from '@/lib/database-queries';
+import { studentQueries } from '@/lib/queries/student-queries';
 import {
   Home,
   Users,
   BookOpen,
+  BookOpen as BookOpenIcon,
   ClipboardList,
   Calendar,
   Settings,
@@ -25,10 +29,14 @@ import {
   Bell,
   Save,
   User as UserIcon,
+  Users as UsersIcon,
   Shield,
   Database,
   Palette,
   Globe,
+  Image as ImageIcon,
+  Info,
+  Phone,
   Lock,
   Package,
   Eye,
@@ -38,7 +46,6 @@ import {
   RefreshCw,
   AlertTriangle,
   CheckCircle,
-  Info,
   Clock,
   Activity,
   Server,
@@ -61,19 +68,55 @@ import {
   Minus,
   ChevronDown,
   ChevronUp,
-  Heart
+  Heart,
+  XCircle,
+  Loader2,
+  Award,
+  MessageSquare,
+  AlertCircle,
+  Gift,
+  Sparkles
 } from 'lucide-react';
+import { collection, query, where, getDocs, updateDoc, doc, orderBy, Timestamp, onSnapshot } from 'firebase/firestore';
+import { userQueries } from '@/lib/database-queries';
+import ImageKitUploader from '@/components/ui/imagekit-uploader';
+import { SCHOOL_ID, SCHOOL_NAME } from '@/lib/constants';
+import PushNotificationSetup from '@/components/PushNotificationSetup';
+
+interface PendingUser {
+  uid: string;
+  name: string;
+  email: string;
+  phone?: string;
+  role: string;
+  schoolId?: string;
+  schoolName?: string;
+  address?: string;
+  createdAt?: Timestamp;
+  isActive: boolean;
+}
 
 function SettingsPage() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [userData, setUserData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const { userData: authUserData } = useAuth();
   const [activeTab, setActiveTab] = useState('general');
   const [showPassword, setShowPassword] = useState(false);
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+  const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([]);
+  const [approvedUsers, setApprovedUsers] = useState<User[]>([]);
+  const [loadingPendingUsers, setLoadingPendingUsers] = useState(false);
+  const [loadingApprovedUsers, setLoadingApprovedUsers] = useState(false);
+  const [updatingUser, setUpdatingUser] = useState<Set<string>>(new Set());
+  const [userFilter, setUserFilter] = useState<'all' | 'admin' | 'teacher' | 'super_admin'>('all');
+  const [userSearchQuery, setUserSearchQuery] = useState('');
   const [systemStats, setSystemStats] = useState({
     uptime: '7d 14h 32m',
     memory: { used: 245, total: 512, percentage: 48 },
@@ -83,11 +126,92 @@ function SettingsPage() {
     totalRequests: 45632
   });
 
+  // Integration state
+  const [integrations, setIntegrations] = useState([
+    {
+      id: 'google-classroom',
+      name: 'Google Classroom',
+      description: 'ক্লাসরুম এবং অ্যাসাইনমেন্ট সিঙ্কোনাইজেশন',
+      status: 'connected',
+      icon: BookOpen,
+      config: {
+        apiKey: '',
+        clientId: '',
+        clientSecret: ''
+      }
+    },
+    {
+      id: 'sms-gateway',
+      name: 'SMS Gateway',
+      description: 'এসএমএস নোটিফিকেশন এবং অ্যালার্ট',
+      status: 'connected',
+      icon: Smartphone,
+      config: {
+        provider: '',
+        apiKey: '',
+        senderId: '',
+        customProvider: ''
+      }
+    },
+    {
+      id: 'payment-gateway',
+      name: 'Payment Gateway',
+      description: 'অনলাইন পেমেন্ট প্রসেসিং',
+      status: 'disconnected',
+      icon: CreditCard,
+      config: {
+        provider: '',
+        merchantId: '',
+        apiKey: '',
+        secretKey: '',
+        customProvider: ''
+      }
+    },
+    {
+      id: 'cloud-storage',
+      name: 'Cloud Storage',
+      description: 'ফাইল স্টোরেজ এবং ব্যাকআপ',
+      status: 'connected',
+      icon: Archive,
+      config: {
+        provider: '',
+        bucketName: '',
+        accessKey: '',
+        secretKey: '',
+        customProvider: ''
+      }
+    }
+  ]);
+
+  const [editingIntegration, setEditingIntegration] = useState<string | null>(null);
+  const [showIntegrationModal, setShowIntegrationModal] = useState(false);
+  
+  // SMS Template state
+  const [smsTemplates, setSmsTemplates] = useState<Array<{
+    id: string;
+    name: string;
+    message: string;
+    variables: string[];
+    category: string;
+  }>>([]);
+  const [smsGatewayTab, setSmsGatewayTab] = useState<'config' | 'templates'>('config');
+  const [editingTemplate, setEditingTemplate] = useState<{
+    id: string;
+    name: string;
+    message: string;
+    category: string;
+  } | null>(null);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [previewStudent, setPreviewStudent] = useState<any>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const messageTextareaRef = useRef<HTMLTextAreaElement>(null);
+
   // Form state for controlled components - all fields initialized with proper values
   const [formData, setFormData] = useState({
     // General settings
-    schoolName: 'আমার স্কুল',
-    schoolCode: 'IQRA-2025',
+    schoolName: 'ইকরা নূরানী একাডেমি',
+    schoolCode: '102330',
+    board: '',
     schoolAddress: 'ঢাকা, বাংলাদেশ',
     schoolPhone: '+8801712345678',
     schoolEmail: 'info@iqraschool.edu.bd',
@@ -96,6 +220,8 @@ function SettingsPage() {
     academicYear: new Date().getFullYear().toString(),
     systemLanguage: 'bn',
     schoolDescription: 'একটি আধুনিক ইসলামিক শিক্ষা প্রতিষ্ঠান যা ধর্মীয় এবং আধুনিক শিক্ষার সমন্বয়ে শিক্ষার্থীদের বিকাশে কাজ করে।',
+    schoolLogo: '', // Logo URL for file export
+    establishmentYear: '', // Establishment year
 
     // Security settings
     minPasswordLength: 8,
@@ -121,6 +247,32 @@ function SettingsPage() {
     darkMode: false,
     rtlSupport: false,
 
+    // Public pages settings
+    galleryPageEnabled: true,
+    aboutPageEnabled: true,
+    contactPageEnabled: true,
+
+    // Contact page content
+    contactPageTitle: 'যোগাযোগ করুন',
+    contactPageSubtitle: 'আমাদের সাথে যোগাযোগ করে আপনার প্রশ্নের উত্তর পান এবং আমাদের সম্পর্কে আরও জানুন',
+    contactPhones: ['+৮৮০ ১৭১১ ২৩৪৫৬৭', '+৮৮০ ১৯১১ ২৩৪৫৬৭'],
+    contactEmails: ['info@iqraschool.edu', 'admission@iqraschool.edu'],
+    contactAddress: ['রামপুরা, ঢাকা-১২১৯', 'বাংলাদেশ'],
+    contactHours: ['রবি-বৃহ: সকাল ৮টা - বিকাল ৫টা', 'শুক্র: সকাল ৮টা - দুপুর ১২টা'],
+    contactDepartments: [
+      { name: 'ভর্তি বিভাগ', phone: '+৮৮০ ১৭১১ ২৩৪৫৬৭', email: 'admission@iqraschool.edu', description: 'নতুন শিক্ষার্থী ভর্তি সংক্রান্ত সকল তথ্য' },
+      { name: 'শিক্ষা বিভাগ', phone: '+৮৮০ ১৭১১ ২৩৪৫৬৮', email: 'academic@iqraschool.edu', description: 'শিক্ষা কার্যক্রম ও পাঠ্যক্রম সংক্রান্ত' },
+      { name: 'প্রশাসন', phone: '+৮৮০ ১৭১১ ২৩৪৫৬৯', email: 'admin@iqraschool.edu', description: 'সাধারণ প্রশাসনিক কাজ' },
+      { name: 'হিসাব বিভাগ', phone: '+৮৮০ ১৭১১ ২৩৪৫৭০', email: 'accounts@iqraschool.edu', description: 'ফি ও আর্থিক বিষয়াদি' }
+    ],
+    contactMapEmbedCode: '',
+    contactMapAddress: 'রামপুরা, ঢাকা-১২১৯',
+    contactSocialMediaFacebook: '',
+    contactSocialMediaTwitter: '',
+    contactSocialMediaInstagram: '',
+    contactSocialMediaYoutube: '',
+    contactFormSubjects: ['ভর্তি সংক্রান্ত', 'শিক্ষা সংক্রান্ত', 'ফি সংক্রান্ত', 'সাধারণ তথ্য', 'অভিযোগ', 'পরামর্শ'],
+
     // Notification settings
     smtpServer: 'smtp.gmail.com',
     smtpPort: 587,
@@ -128,14 +280,55 @@ function SettingsPage() {
     smtpPassword: '',
     studentRegistrationEmail: true,
     studentRegistrationPush: false,
+    studentRegistrationSMS: false,
     paymentReminderEmail: true,
     paymentReminderPush: true,
+    paymentReminderSMS: false,
     attendanceReportEmail: false,
     attendanceReportPush: true,
+    attendanceReportSMS: false,
     systemAlertEmail: true,
     systemAlertPush: true,
+    systemAlertSMS: false,
     examScheduleEmail: true,
     examSchedulePush: false,
+    examScheduleSMS: false,
+    examResultsEmail: true,
+    examResultsPush: true,
+    examResultsSMS: false,
+    homeworkAssignmentEmail: true,
+    homeworkAssignmentPush: true,
+    homeworkAssignmentSMS: false,
+    homeworkReminderEmail: true,
+    homeworkReminderPush: true,
+    homeworkReminderSMS: false,
+    classAnnouncementEmail: true,
+    classAnnouncementPush: true,
+    classAnnouncementSMS: false,
+    noticeNotificationEmail: true,
+    noticeNotificationPush: true,
+    noticeNotificationSMS: false,
+    eventReminderEmail: true,
+    eventReminderPush: true,
+    eventReminderSMS: false,
+    messageNotificationEmail: true,
+    messageNotificationPush: true,
+    messageNotificationSMS: false,
+    complaintResponseEmail: true,
+    complaintResponsePush: true,
+    complaintResponseSMS: false,
+    feePaymentConfirmationEmail: false,
+    feePaymentConfirmationPush: false,
+    feePaymentConfirmationSMS: false,
+    admissionConfirmationEmail: true,
+    admissionConfirmationPush: true,
+    admissionConfirmationSMS: false,
+    teacherAssignmentEmail: true,
+    teacherAssignmentPush: false,
+    teacherAssignmentSMS: false,
+    classScheduleEmail: false,
+    classSchedulePush: false,
+    classScheduleSMS: false,
 
     // Advanced settings
     debugMode: false,
@@ -835,6 +1028,11 @@ function SettingsPage() {
     }
   };
 
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [authUserData, userData, user]);
+
   useEffect(() => {
     if (!auth) {
       console.error('Auth not initialized');
@@ -846,6 +1044,12 @@ function SettingsPage() {
       if (user) {
         setUser(user);
         console.log('🔐 User authenticated:', user.email);
+
+        // Load user data from Firestore
+        const userDoc = await userQueries.getUserByEmail(user.email || '');
+        if (userDoc) {
+          setUserData(userDoc);
+        }
 
         // Load settings from Firebase
         await loadSettings();
@@ -859,6 +1063,11 @@ function SettingsPage() {
 
         // Load classes from Firebase for dropdown
         await loadClasses();
+
+        // Load pending users if super admin and users tab is active
+        if (userDoc?.role === 'super_admin' && activeTab === 'users') {
+          await loadPendingUsers();
+        }
       } else {
         router.push('/auth/login');
       }
@@ -875,11 +1084,38 @@ function SettingsPage() {
       if (settingsData) {
         setSettings(settingsData);
 
+        // Load integrations from settings if available
+        if ((settingsData as any).integrations && Array.isArray((settingsData as any).integrations)) {
+          const savedIntegrations = (settingsData as any).integrations;
+          setIntegrations(prevIntegrations => 
+            prevIntegrations.map(integration => {
+              const saved = savedIntegrations.find((s: any) => s.id === integration.id);
+              if (saved) {
+                return {
+                  ...integration,
+                  status: saved.status || integration.status,
+                  config: {
+                    ...integration.config,
+                    ...saved.config
+                  }
+                };
+              }
+              return integration;
+            })
+          );
+        }
+
+        // Load SMS templates from settings if available
+        if ((settingsData as any).smsTemplates && Array.isArray((settingsData as any).smsTemplates)) {
+          setSmsTemplates((settingsData as any).smsTemplates);
+        }
+
         // Update form data with loaded settings
         setFormData({
           // General settings
           schoolName: settingsData.schoolName || '',
           schoolCode: settingsData.schoolCode || '',
+          board: settingsData.board || '',
           schoolAddress: settingsData.schoolAddress || '',
           schoolPhone: settingsData.schoolPhone || '',
           schoolEmail: settingsData.schoolEmail || '',
@@ -888,6 +1124,8 @@ function SettingsPage() {
           academicYear: settingsData.academicYear || '',
           systemLanguage: settingsData.systemLanguage || '',
           schoolDescription: settingsData.schoolDescription || '',
+          schoolLogo: (settingsData as any).schoolLogo || '',
+          establishmentYear: (settingsData as any).establishmentYear || '',
 
           // Security settings
           minPasswordLength: settingsData.minPasswordLength || 8,
@@ -913,21 +1151,81 @@ function SettingsPage() {
           darkMode: settingsData.darkMode || false,
           rtlSupport: settingsData.rtlSupport || false,
 
+          // Public pages settings
+          galleryPageEnabled: settingsData.galleryPageEnabled !== undefined ? settingsData.galleryPageEnabled : true,
+          aboutPageEnabled: settingsData.aboutPageEnabled !== undefined ? settingsData.aboutPageEnabled : true,
+          contactPageEnabled: settingsData.contactPageEnabled !== undefined ? settingsData.contactPageEnabled : true,
+
+          // Contact page content
+          contactPageTitle: settingsData.contactPageTitle || 'যোগাযোগ করুন',
+          contactPageSubtitle: settingsData.contactPageSubtitle || 'আমাদের সাথে যোগাযোগ করে আপনার প্রশ্নের উত্তর পান এবং আমাদের সম্পর্কে আরও জানুন',
+          contactPhones: settingsData.contactPhones || ['+৮৮০ ১৭১১ ২৩৪৫৬৭', '+৮৮০ ১৯১১ ২৩৪৫৬৭'],
+          contactEmails: settingsData.contactEmails || ['info@iqraschool.edu', 'admission@iqraschool.edu'],
+          contactAddress: settingsData.contactAddress || ['রামপুরা, ঢাকা-১২১৯', 'বাংলাদেশ'],
+          contactHours: settingsData.contactHours || ['রবি-বৃহ: সকাল ৮টা - বিকাল ৫টা', 'শুক্র: সকাল ৮টা - দুপুর ১২টা'],
+          contactDepartments: settingsData.contactDepartments || [
+            { name: 'ভর্তি বিভাগ', phone: '+৮৮০ ১৭১১ ২৩৪৫৬৭', email: 'admission@iqraschool.edu', description: 'নতুন শিক্ষার্থী ভর্তি সংক্রান্ত সকল তথ্য' },
+            { name: 'শিক্ষা বিভাগ', phone: '+৮৮০ ১৭১১ ২৩৪৫৬৮', email: 'academic@iqraschool.edu', description: 'শিক্ষা কার্যক্রম ও পাঠ্যক্রম সংক্রান্ত' },
+            { name: 'প্রশাসন', phone: '+৮৮০ ১৭১১ ২৩৪৫৬৯', email: 'admin@iqraschool.edu', description: 'সাধারণ প্রশাসনিক কাজ' },
+            { name: 'হিসাব বিভাগ', phone: '+৮৮০ ১৭১১ ২৩৪৫৭০', email: 'accounts@iqraschool.edu', description: 'ফি ও আর্থিক বিষয়াদি' }
+          ],
+          contactMapEmbedCode: settingsData.contactMapEmbedCode || '',
+          contactMapAddress: settingsData.contactMapAddress || 'রামপুরা, ঢাকা-১২১৯',
+          contactSocialMediaFacebook: settingsData.contactSocialMedia?.facebook || '',
+          contactSocialMediaTwitter: settingsData.contactSocialMedia?.twitter || '',
+          contactSocialMediaInstagram: settingsData.contactSocialMedia?.instagram || '',
+          contactSocialMediaYoutube: settingsData.contactSocialMedia?.youtube || '',
+          contactFormSubjects: settingsData.contactFormSubjects || ['ভর্তি সংক্রান্ত', 'শিক্ষা সংক্রান্ত', 'ফি সংক্রান্ত', 'সাধারণ তথ্য', 'অভিযোগ', 'পরামর্শ'],
+
           // Notification settings
           smtpServer: settingsData.smtpServer || 'smtp.gmail.com',
           smtpPort: settingsData.smtpPort || 587,
           smtpEmail: settingsData.smtpEmail || '',
           smtpPassword: settingsData.smtpPassword || '',
-          studentRegistrationEmail: settingsData.studentRegistrationEmail || true,
-          studentRegistrationPush: settingsData.studentRegistrationPush || false,
-          paymentReminderEmail: settingsData.paymentReminderEmail || true,
-          paymentReminderPush: settingsData.paymentReminderPush || true,
-          attendanceReportEmail: settingsData.attendanceReportEmail || false,
-          attendanceReportPush: settingsData.attendanceReportPush || true,
-          systemAlertEmail: settingsData.systemAlertEmail || true,
-          systemAlertPush: settingsData.systemAlertPush || true,
-          examScheduleEmail: settingsData.examScheduleEmail || true,
-          examSchedulePush: settingsData.examSchedulePush || false,
+          studentRegistrationEmail: settingsData.studentRegistrationEmail !== undefined ? settingsData.studentRegistrationEmail : true,
+          studentRegistrationPush: settingsData.studentRegistrationPush !== undefined ? settingsData.studentRegistrationPush : false,
+          studentRegistrationSMS: settingsData.studentRegistrationSMS !== undefined ? settingsData.studentRegistrationSMS : false,
+          paymentReminderEmail: settingsData.paymentReminderEmail !== undefined ? settingsData.paymentReminderEmail : true,
+          paymentReminderPush: settingsData.paymentReminderPush !== undefined ? settingsData.paymentReminderPush : true,
+          paymentReminderSMS: settingsData.paymentReminderSMS !== undefined ? settingsData.paymentReminderSMS : false,
+          attendanceReportEmail: settingsData.attendanceReportEmail !== undefined ? settingsData.attendanceReportEmail : false,
+          attendanceReportPush: settingsData.attendanceReportPush !== undefined ? settingsData.attendanceReportPush : true,
+          attendanceReportSMS: settingsData.attendanceReportSMS !== undefined ? settingsData.attendanceReportSMS : false,
+          systemAlertEmail: settingsData.systemAlertEmail !== undefined ? settingsData.systemAlertEmail : true,
+          systemAlertPush: settingsData.systemAlertPush !== undefined ? settingsData.systemAlertPush : true,
+          examScheduleEmail: settingsData.examScheduleEmail !== undefined ? settingsData.examScheduleEmail : true,
+          examSchedulePush: settingsData.examSchedulePush !== undefined ? settingsData.examSchedulePush : false,
+          examScheduleSMS: settingsData.examScheduleSMS !== undefined ? settingsData.examScheduleSMS : false,
+          examResultsEmail: settingsData.examResultsEmail !== undefined ? settingsData.examResultsEmail : true,
+          examResultsPush: settingsData.examResultsPush !== undefined ? settingsData.examResultsPush : true,
+          examResultsSMS: settingsData.examResultsSMS !== undefined ? settingsData.examResultsSMS : false,
+          homeworkAssignmentEmail: settingsData.homeworkAssignmentEmail !== undefined ? settingsData.homeworkAssignmentEmail : true,
+          homeworkAssignmentPush: settingsData.homeworkAssignmentPush !== undefined ? settingsData.homeworkAssignmentPush : true,
+          homeworkReminderEmail: settingsData.homeworkReminderEmail !== undefined ? settingsData.homeworkReminderEmail : true,
+          homeworkReminderPush: settingsData.homeworkReminderPush !== undefined ? settingsData.homeworkReminderPush : true,
+          classAnnouncementEmail: settingsData.classAnnouncementEmail !== undefined ? settingsData.classAnnouncementEmail : true,
+          classAnnouncementPush: settingsData.classAnnouncementPush !== undefined ? settingsData.classAnnouncementPush : true,
+          noticeNotificationEmail: settingsData.noticeNotificationEmail !== undefined ? settingsData.noticeNotificationEmail : true,
+          noticeNotificationPush: settingsData.noticeNotificationPush !== undefined ? settingsData.noticeNotificationPush : true,
+          eventReminderEmail: settingsData.eventReminderEmail !== undefined ? settingsData.eventReminderEmail : true,
+          eventReminderPush: settingsData.eventReminderPush !== undefined ? settingsData.eventReminderPush : true,
+          messageNotificationEmail: settingsData.messageNotificationEmail !== undefined ? settingsData.messageNotificationEmail : true,
+          messageNotificationPush: settingsData.messageNotificationPush !== undefined ? settingsData.messageNotificationPush : true,
+          messageNotificationSMS: settingsData.messageNotificationSMS !== undefined ? settingsData.messageNotificationSMS : false,
+          complaintResponseEmail: settingsData.complaintResponseEmail !== undefined ? settingsData.complaintResponseEmail : true,
+          complaintResponsePush: settingsData.complaintResponsePush !== undefined ? settingsData.complaintResponsePush : true,
+          feePaymentConfirmationEmail: settingsData.feePaymentConfirmationEmail !== undefined ? settingsData.feePaymentConfirmationEmail : false,
+          feePaymentConfirmationPush: settingsData.feePaymentConfirmationPush !== undefined ? settingsData.feePaymentConfirmationPush : false,
+          feePaymentConfirmationSMS: settingsData.feePaymentConfirmationSMS !== undefined ? settingsData.feePaymentConfirmationSMS : false,
+          admissionConfirmationEmail: settingsData.admissionConfirmationEmail !== undefined ? settingsData.admissionConfirmationEmail : true,
+          admissionConfirmationPush: settingsData.admissionConfirmationPush !== undefined ? settingsData.admissionConfirmationPush : true,
+          admissionConfirmationSMS: settingsData.admissionConfirmationSMS !== undefined ? settingsData.admissionConfirmationSMS : false,
+          teacherAssignmentEmail: settingsData.teacherAssignmentEmail !== undefined ? settingsData.teacherAssignmentEmail : true,
+          teacherAssignmentPush: settingsData.teacherAssignmentPush !== undefined ? settingsData.teacherAssignmentPush : false,
+          teacherAssignmentSMS: settingsData.teacherAssignmentSMS !== undefined ? settingsData.teacherAssignmentSMS : false,
+          classScheduleEmail: settingsData.classScheduleEmail !== undefined ? settingsData.classScheduleEmail : false,
+          classSchedulePush: settingsData.classSchedulePush !== undefined ? settingsData.classSchedulePush : false,
+          classScheduleSMS: settingsData.classScheduleSMS !== undefined ? settingsData.classScheduleSMS : false,
 
           // Advanced settings
           debugMode: settingsData.debugMode || false,
@@ -967,6 +1265,180 @@ function SettingsPage() {
     }
   };
 
+  // Load pending users (admin, teacher, and super_admin applications)
+  const loadPendingUsers = async () => {
+    if (userData?.role !== 'super_admin') return;
+
+    try {
+      setLoadingPendingUsers(true);
+      // Get all pending users (isActive: false)
+      const allPending = await userQueries.getPendingUsers();
+      
+      // Filter admin, teacher, and super_admin roles that need approval
+      const pendingApplications = allPending.filter(
+        u => (u.role === 'admin' || u.role === 'teacher' || u.role === 'super_admin') && !u.isActive
+      ) as PendingUser[];
+
+      setPendingUsers(pendingApplications);
+      console.log(`Loaded ${pendingApplications.length} pending applications (admin/teacher/super_admin)`);
+    } catch (error) {
+      console.error('Error loading pending users:', error);
+      alert('অনুমোদনের জন্য অপেক্ষমান ব্যবহারকারী লোড করতে সমস্যা হয়েছে।');
+    } finally {
+      setLoadingPendingUsers(false);
+    }
+  };
+
+  // Load approved users (admin, teacher, and super_admin)
+  const loadApprovedUsers = async () => {
+    if (userData?.role !== 'super_admin') return;
+
+    try {
+      setLoadingApprovedUsers(true);
+      // Get all active users
+      const allActive = await userQueries.getActiveUsers();
+      
+      // Filter admin, teacher, and super_admin roles
+      const approved = allActive.filter(
+        u => u.role === 'admin' || u.role === 'teacher' || u.role === 'super_admin'
+      );
+
+      setApprovedUsers(approved);
+      console.log(`Loaded ${approved.length} approved users (admin/teacher/super_admin)`);
+    } catch (error) {
+      console.error('Error loading approved users:', error);
+      alert('অনুমোদনপ্রাপ্ত ব্যবহারকারী লোড করতে সমস্যা হয়েছে।');
+    } finally {
+      setLoadingApprovedUsers(false);
+    }
+  };
+
+  // Set up real-time listener for users
+  useEffect(() => {
+    if (activeTab === 'users' && userData?.role === 'super_admin') {
+      loadPendingUsers();
+      loadApprovedUsers();
+
+      // Set up real-time listener for users
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, orderBy('createdAt', 'desc'));
+      
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const allUsers = snapshot.docs.map(doc => ({
+          uid: doc.id,
+          ...doc.data()
+        } as User));
+
+        // Update pending users
+        const pending = allUsers.filter(
+          u => (u.role === 'admin' || u.role === 'teacher' || u.role === 'super_admin') && !u.isActive
+        ) as PendingUser[];
+        setPendingUsers(pending);
+
+        // Update approved users
+        const approved = allUsers.filter(
+          u => (u.role === 'admin' || u.role === 'teacher' || u.role === 'super_admin') && u.isActive
+        );
+        setApprovedUsers(approved);
+      }, (error) => {
+        console.error('Error listening to users:', error);
+      });
+
+      return () => unsubscribe();
+    }
+  }, [activeTab, userData]);
+
+  // Approve user
+  const handleApproveUser = async (userId: string) => {
+    if (userData?.role !== 'super_admin') {
+      alert('আপনার অনুমোদনের অনুমতি নেই।');
+      return;
+    }
+
+    setUpdatingUser(prev => new Set(prev).add(userId));
+
+    try {
+      // Get current school name from settings
+      const currentSettings = await settingsQueries.getSettings();
+      const schoolName = currentSettings?.schoolName || SCHOOL_NAME;
+      const schoolCode = currentSettings?.schoolCode || SCHOOL_ID;
+
+      // Update user with correct school name and activate
+      await userQueries.updateUser(userId, {
+        isActive: true,
+        schoolName: schoolName,
+        schoolId: schoolCode
+      });
+      
+      // Remove from pending list
+      setPendingUsers(prev => prev.filter(u => u.uid !== userId));
+      
+      alert('ব্যবহারকারী অনুমোদন করা হয়েছে। এখন তারা লগইন করতে পারবে।');
+    } catch (error) {
+      console.error('Error approving user:', error);
+      alert('ব্যবহারকারী অনুমোদন করতে সমস্যা হয়েছে।');
+    } finally {
+      setUpdatingUser(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(userId);
+        return newSet;
+      });
+    }
+  };
+
+  // Reject user (delete application)
+  const handleRejectUser = async (userId: string) => {
+    if (userData?.role !== 'super_admin') {
+      alert('আপনার বাতিল করার অনুমতি নেই।');
+      return;
+    }
+
+    if (!confirm('আপনি কি নিশ্চিত যে আপনি এই আবেদনটি বাতিল করতে চান?')) {
+      return;
+    }
+
+    setUpdatingUser(prev => new Set(prev).add(userId));
+
+    try {
+      await userQueries.deleteUser(userId);
+      
+      // Remove from pending list
+      setPendingUsers(prev => prev.filter(u => u.uid !== userId));
+      
+      alert('আবেদন বাতিল করা হয়েছে।');
+    } catch (error) {
+      console.error('Error rejecting user:', error);
+      alert('আবেদন বাতিল করতে সমস্যা হয়েছে।');
+    } finally {
+      setUpdatingUser(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(userId);
+        return newSet;
+      });
+    }
+  };
+
+  // Filter approved users
+  const filteredApprovedUsers = approvedUsers.filter(user => {
+    // Role filter
+    if (userFilter !== 'all' && user.role !== userFilter) {
+      return false;
+    }
+
+    // Search filter
+    if (userSearchQuery.trim()) {
+      const query = userSearchQuery.toLowerCase();
+      return (
+        user.name?.toLowerCase().includes(query) ||
+        user.email?.toLowerCase().includes(query) ||
+        user.phone?.toLowerCase().includes(query) ||
+        user.schoolName?.toLowerCase().includes(query)
+      );
+    }
+
+    return true;
+  });
+
   const handleLogout = async () => {
     if (!auth) {
       console.error('Auth not initialized');
@@ -981,6 +1453,164 @@ function SettingsPage() {
     }
   };
 
+  // Function to initialize all default templates
+  const initializeDefaultTemplates = () => {
+    const defaultTemplates = [
+      // ভর্তি (Admission)
+      {
+        id: 'template-admission',
+        name: 'ভর্তি',
+        category: 'Admission',
+        message: 'আস সালামু আলাইকুম- {guardianName}, {studentName} এর {className} শ্রেণিতে ভর্তি সম্পন্ন হয়েছে। স্বাগতম {schoolName} এ। - {schoolName}',
+        variables: ['{guardianName}', '{studentName}', '{className}', '{schoolName}']
+      },
+      // সেশন (Session)
+      {
+        id: 'template-session',
+        name: 'সেশন',
+        category: 'Session',
+        message: 'আস সালামু আলাইকুম- {guardianName}, {studentName} এর জন্য নতুন সেশন {session} শুরু হয়েছে। - {schoolName}',
+        variables: ['{guardianName}', '{studentName}', '{session}', '{schoolName}']
+      },
+      // টিউশন ফি (Tuition Fee)
+      {
+        id: 'template-tuition-fee',
+        name: 'টিউশন ফি',
+        category: 'Tuition Fee',
+        message: 'আস সালামু আলাইকুম- {guardianName}, {studentName} এর {className} শ্রেণির মাসিক টিউশন ফি {amount} টাকা বাকি আছে। অনুগ্রহ করে পরিশোধ করুন। - {schoolName}',
+        variables: ['{guardianName}', '{studentName}', '{className}', '{amount}', '{schoolName}']
+      },
+      // টিউশন ফি পেমেন্ট নিশ্চিতকরণ (Tuition Fee Payment Confirmation)
+      {
+        id: 'template-tuition-payment-confirmation',
+        name: 'টিউশন ফি পেমেন্ট নিশ্চিতকরণ',
+        category: 'Payment',
+        message: `আস সালামু আলাইকুম,
+{studentName} (রোল: {rollNumber}) এর {monthText} টিউশন ফি {totalAmount} টাকা সফলভাবে গ্রহণ করা হয়েছে।
+তারিখ: {date}
+ভাউচার: {voucherNumber}
+ধন্যবাদ,
+{schoolName}`,
+        variables: ['{studentName}', '{rollNumber}', '{monthText}', '{totalAmount}', '{date}', '{voucherNumber}', '{schoolName}']
+      },
+      // টিউশন ফি পেমেন্ট (দরিদ্র তহবিল সহ)
+      {
+        id: 'template-tuition-payment-with-fund',
+        name: 'টিউশন ফি পেমেন্ট (দরিদ্র তহবিল সহ)',
+        category: 'Payment',
+        message: `আস সালামু আলাইকুম,
+{studentName} (রোল: {rollNumber}) এর {monthText} টিউশন ফি {totalAmount} টাকা সফলভাবে গ্রহণ করা হয়েছে।
+প্রদত্ত: {paidAmount} টাকা
+দরিদ্র তহবিল থেকে: {donationAmount} টাকা
+তারিখ: {date}
+ভাউচার: {voucherNumber}
+ধন্যবাদ,
+{schoolName}`,
+        variables: ['{studentName}', '{rollNumber}', '{monthText}', '{totalAmount}', '{paidAmount}', '{donationAmount}', '{date}', '{voucherNumber}', '{schoolName}']
+      },
+      // উপস্থিতি (Attendance)
+      {
+        id: 'template-attendance',
+        name: 'উপস্থিতি',
+        category: 'Attendance',
+        message: 'আস সালামু আলাইকুম- {guardianName}, {studentName} আজ {date} তারিখে {className} শ্রেণিতে অনুপস্থিত ছিলেন। অনুগ্রহ করে জানান কেন অনুপস্থিত ছিলেন। - {schoolName}',
+        variables: ['{guardianName}', '{studentName}', '{date}', '{className}', '{schoolName}']
+      },
+      // বিশেষ ছুটি (Special Holiday/Event)
+      {
+        id: 'template-special-holiday',
+        name: 'বিশেষ ছুটি',
+        category: 'Event',
+        message: 'আস সালামু আলাইকুম- {guardianName}, {date} তারিখে {schoolName} এ বিশেষ ছুটি থাকবে। - {schoolName}',
+        variables: ['{guardianName}', '{date}', '{schoolName}']
+      },
+      // পরীক্ষা (Exam)
+      {
+        id: 'template-exam',
+        name: 'পরীক্ষা',
+        category: 'Exam',
+        message: 'আস সালামু আলাইকুম- {guardianName}, {studentName} এর {className} শ্রেণির পরীক্ষার রুটিন প্রকাশিত হয়েছে। পরীক্ষা শুরু হবে {examDate} তারিখে। - {schoolName}',
+        variables: ['{guardianName}', '{studentName}', '{className}', '{examDate}', '{schoolName}']
+      },
+      // পরীক্ষার ফি (Exam Fee)
+      {
+        id: 'template-exam-fee',
+        name: 'পরীক্ষার ফি',
+        category: 'Exam Fee',
+        message: 'আস সালামু আলাইকুম- {guardianName}, {studentName} এর {className} শ্রেণির পরীক্ষার ফি {amount} টাকা বাকি আছে। অনুগ্রহ করে পরিশোধ করুন। - {schoolName}',
+        variables: ['{guardianName}', '{studentName}', '{className}', '{amount}', '{schoolName}']
+      },
+      // ফলাফল (Result)
+      {
+        id: 'template-result',
+        name: 'ফলাফল',
+        category: 'Exam',
+        message: 'আস সালামু আলাইকুম- {guardianName}, {studentName} এর {className} শ্রেণির {examName} পরীক্ষার ফলাফল প্রকাশিত হয়েছে। - {schoolName}',
+        variables: ['{guardianName}', '{studentName}', '{className}', '{examName}', '{schoolName}']
+      },
+      // ফলাফলের তারিখ (Result Date)
+      {
+        id: 'template-result-date',
+        name: 'ফলাফলের তারিখ',
+        category: 'Exam',
+        message: 'আস সালামু আলাইকুম- {guardianName}, {studentName} এর {className} শ্রেণির {examName} পরীক্ষার ফলাফল {resultDate} তারিখে প্রকাশিত হবে। - {schoolName}',
+        variables: ['{guardianName}', '{studentName}', '{className}', '{examName}', '{resultDate}', '{schoolName}']
+      },
+      // বকেয়া রিমাইন্ডার (Outstanding Fee Reminder)
+      {
+        id: 'template-outstanding-fee-reminder',
+        name: 'বকেয়া রিমাইন্ডার',
+        category: 'Reminder',
+        message: 'আস সালামু আলাইকুম- {guardianName}, {studentName} এর {className} শ্রেণির {feeType} ফি {amount} টাকা বাকি আছে। অনুগ্রহ করে দ্রুত পরিশোধ করুন। - {schoolName}',
+        variables: ['{guardianName}', '{studentName}', '{className}', '{feeType}', '{amount}', '{schoolName}']
+      },
+      // শিক্ষক বেতন (Teacher Salary)
+      {
+        id: 'template-teacher-salary',
+        name: 'শিক্ষক বেতন',
+        category: 'Salary Payment',
+        message: 'আস সালামু আলাইকুম- {teacherName}, আপনার {month} মাসের বেতন {amount} টাকা সফলভাবে পরিশোধ হয়েছে। রসিদ নং: {receiptNumber}। ধন্যবাদ - {schoolName}',
+        variables: ['{teacherName}', '{month}', '{amount}', '{receiptNumber}', '{schoolName}']
+      }
+    ];
+
+    // Merge with existing templates, update if exists, add if new
+    setSmsTemplates(prevTemplates => {
+      const existingMap = new Map(prevTemplates.map(t => [t.id, t]));
+      
+      // Update existing templates or add new ones
+      defaultTemplates.forEach(template => {
+        existingMap.set(template.id, template);
+      });
+      
+      return Array.from(existingMap.values());
+    });
+
+    setSaveMessage('সব ডিফল্ট টেম্পলেট যোগ/আপডেট করা হয়েছে। এখন "সংরক্ষণ করুন" বাটনে ক্লিক করুন!');
+    setTimeout(() => setSaveMessage(''), 3000);
+  };
+
+  // Helper function to recursively remove undefined values
+  const removeUndefinedValues = (obj: any): any => {
+    if (obj === null || obj === undefined) {
+      return undefined;
+    }
+    if (Array.isArray(obj)) {
+      return obj.map(item => removeUndefinedValues(item)).filter(item => item !== undefined);
+    }
+    if (typeof obj === 'object') {
+      const cleaned: any = {};
+      for (const [key, value] of Object.entries(obj)) {
+        const cleanedValue = removeUndefinedValues(value);
+        if (cleanedValue !== undefined) {
+          cleaned[key] = cleanedValue;
+        }
+      }
+      return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+    }
+    return obj;
+  };
+
   const handleSaveSettings = async () => {
     if (!user) return;
 
@@ -989,8 +1619,10 @@ function SettingsPage() {
 
     try {
       // Get form data from controlled components
-      const schoolName = formData.schoolName || 'আমার স্কুল';
-      const schoolCode = formData.schoolCode || 'IQRA-2025';
+      // Don't use default values - use what user entered or empty string
+      const schoolName = formData.schoolName || '';
+      const schoolCode = formData.schoolCode || '';
+      const board = formData.board || '';
       const schoolAddress = formData.schoolAddress || 'ঢাকা, বাংলাদেশ';
       const schoolPhone = formData.schoolPhone || '+8801712345678';
       const schoolEmail = formData.schoolEmail || 'info@iqraschool.edu.bd';
@@ -999,6 +1631,8 @@ function SettingsPage() {
       const academicYear = formData.academicYear || new Date().getFullYear().toString();
       const systemLanguage = formData.systemLanguage || 'bn';
       const schoolDescription = formData.schoolDescription || 'একটি আধুনিক ইসলামিক শিক্ষা প্রতিষ্ঠান যা ধর্মীয় এবং আধুনিক শিক্ষার সমন্বয়ে শিক্ষার্থীদের বিকাশে কাজ করে।';
+      const schoolLogo = formData.schoolLogo || '';
+      const establishmentYear = formData.establishmentYear || '';
 
       // Security settings
       const minPasswordLength = formData.minPasswordLength || 8;
@@ -1023,22 +1657,75 @@ function SettingsPage() {
       const sidebarCollapsed = formData.sidebarCollapsed || false;
       const darkMode = formData.darkMode || false;
       const rtlSupport = formData.rtlSupport || false;
+      const galleryPageEnabled = formData.galleryPageEnabled !== undefined ? formData.galleryPageEnabled : true;
+      const aboutPageEnabled = formData.aboutPageEnabled !== undefined ? formData.aboutPageEnabled : true;
+      const contactPageEnabled = formData.contactPageEnabled !== undefined ? formData.contactPageEnabled : true;
+      const contactPageTitle = formData.contactPageTitle || 'যোগাযোগ করুন';
+      const contactPageSubtitle = formData.contactPageSubtitle || 'আমাদের সাথে যোগাযোগ করে আপনার প্রশ্নের উত্তর পান এবং আমাদের সম্পর্কে আরও জানুন';
+      const contactPhones = formData.contactPhones || [];
+      const contactEmails = formData.contactEmails || [];
+      const contactAddress = formData.contactAddress || [];
+      const contactHours = formData.contactHours || [];
+      const contactDepartments = formData.contactDepartments || [];
+      const contactMapEmbedCode = formData.contactMapEmbedCode || '';
+      const contactMapAddress = formData.contactMapAddress || '';
+      const contactFormSubjects = formData.contactFormSubjects || [];
+      const contactSocialMedia = {
+        facebook: formData.contactSocialMediaFacebook || '',
+        twitter: formData.contactSocialMediaTwitter || '',
+        instagram: formData.contactSocialMediaInstagram || '',
+        youtube: formData.contactSocialMediaYoutube || ''
+      };
 
       // Notification settings
       const smtpServer = formData.smtpServer || 'smtp.gmail.com';
       const smtpPort = formData.smtpPort || 587;
       const smtpEmail = formData.smtpEmail || 'noreply@iqraschool.edu.bd';
       const smtpPassword = formData.smtpPassword || '';
-      const studentRegistrationEmail = formData.studentRegistrationEmail || true;
-      const studentRegistrationPush = formData.studentRegistrationPush || false;
-      const paymentReminderEmail = formData.paymentReminderEmail || true;
-      const paymentReminderPush = formData.paymentReminderPush || true;
-      const attendanceReportEmail = formData.attendanceReportEmail || false;
-      const attendanceReportPush = formData.attendanceReportPush || true;
-      const systemAlertEmail = formData.systemAlertEmail || true;
-      const systemAlertPush = formData.systemAlertPush || true;
-      const examScheduleEmail = formData.examScheduleEmail || true;
-      const examSchedulePush = formData.examSchedulePush || false;
+      const studentRegistrationEmail = formData.studentRegistrationEmail !== undefined ? formData.studentRegistrationEmail : true;
+      const studentRegistrationPush = formData.studentRegistrationPush !== undefined ? formData.studentRegistrationPush : false;
+      const studentRegistrationSMS = formData.studentRegistrationSMS !== undefined ? formData.studentRegistrationSMS : false;
+      const paymentReminderEmail = formData.paymentReminderEmail !== undefined ? formData.paymentReminderEmail : true;
+      const paymentReminderPush = formData.paymentReminderPush !== undefined ? formData.paymentReminderPush : true;
+      const paymentReminderSMS = formData.paymentReminderSMS !== undefined ? formData.paymentReminderSMS : false;
+      const attendanceReportEmail = formData.attendanceReportEmail !== undefined ? formData.attendanceReportEmail : false;
+      const attendanceReportPush = formData.attendanceReportPush !== undefined ? formData.attendanceReportPush : true;
+      const attendanceReportSMS = formData.attendanceReportSMS !== undefined ? formData.attendanceReportSMS : false;
+      const systemAlertEmail = formData.systemAlertEmail !== undefined ? formData.systemAlertEmail : true;
+      const systemAlertPush = formData.systemAlertPush !== undefined ? formData.systemAlertPush : true;
+      const examScheduleEmail = formData.examScheduleEmail !== undefined ? formData.examScheduleEmail : true;
+      const examSchedulePush = formData.examSchedulePush !== undefined ? formData.examSchedulePush : false;
+      const examScheduleSMS = formData.examScheduleSMS !== undefined ? formData.examScheduleSMS : false;
+      const examResultsEmail = formData.examResultsEmail !== undefined ? formData.examResultsEmail : true;
+      const examResultsPush = formData.examResultsPush !== undefined ? formData.examResultsPush : true;
+      const examResultsSMS = formData.examResultsSMS !== undefined ? formData.examResultsSMS : false;
+      const homeworkAssignmentEmail = formData.homeworkAssignmentEmail !== undefined ? formData.homeworkAssignmentEmail : true;
+      const homeworkAssignmentPush = formData.homeworkAssignmentPush !== undefined ? formData.homeworkAssignmentPush : true;
+      const homeworkReminderEmail = formData.homeworkReminderEmail !== undefined ? formData.homeworkReminderEmail : true;
+      const homeworkReminderPush = formData.homeworkReminderPush !== undefined ? formData.homeworkReminderPush : true;
+      const classAnnouncementEmail = formData.classAnnouncementEmail !== undefined ? formData.classAnnouncementEmail : true;
+      const classAnnouncementPush = formData.classAnnouncementPush !== undefined ? formData.classAnnouncementPush : true;
+      const noticeNotificationEmail = formData.noticeNotificationEmail !== undefined ? formData.noticeNotificationEmail : true;
+      const noticeNotificationPush = formData.noticeNotificationPush !== undefined ? formData.noticeNotificationPush : true;
+      const eventReminderEmail = formData.eventReminderEmail !== undefined ? formData.eventReminderEmail : true;
+      const eventReminderPush = formData.eventReminderPush !== undefined ? formData.eventReminderPush : true;
+      const messageNotificationEmail = formData.messageNotificationEmail !== undefined ? formData.messageNotificationEmail : true;
+      const messageNotificationPush = formData.messageNotificationPush !== undefined ? formData.messageNotificationPush : true;
+      const messageNotificationSMS = formData.messageNotificationSMS !== undefined ? formData.messageNotificationSMS : false;
+      const complaintResponseEmail = formData.complaintResponseEmail !== undefined ? formData.complaintResponseEmail : true;
+      const complaintResponsePush = formData.complaintResponsePush !== undefined ? formData.complaintResponsePush : true;
+      const feePaymentConfirmationEmail = formData.feePaymentConfirmationEmail !== undefined ? formData.feePaymentConfirmationEmail : false;
+      const feePaymentConfirmationPush = formData.feePaymentConfirmationPush !== undefined ? formData.feePaymentConfirmationPush : false;
+      const feePaymentConfirmationSMS = formData.feePaymentConfirmationSMS !== undefined ? formData.feePaymentConfirmationSMS : false;
+      const admissionConfirmationEmail = formData.admissionConfirmationEmail !== undefined ? formData.admissionConfirmationEmail : true;
+      const admissionConfirmationPush = formData.admissionConfirmationPush !== undefined ? formData.admissionConfirmationPush : true;
+      const admissionConfirmationSMS = formData.admissionConfirmationSMS !== undefined ? formData.admissionConfirmationSMS : false;
+      const teacherAssignmentEmail = formData.teacherAssignmentEmail !== undefined ? formData.teacherAssignmentEmail : true;
+      const teacherAssignmentPush = formData.teacherAssignmentPush !== undefined ? formData.teacherAssignmentPush : false;
+      const teacherAssignmentSMS = formData.teacherAssignmentSMS !== undefined ? formData.teacherAssignmentSMS : false;
+      const classScheduleEmail = formData.classScheduleEmail !== undefined ? formData.classScheduleEmail : false;
+      const classSchedulePush = formData.classSchedulePush !== undefined ? formData.classSchedulePush : false;
+      const classScheduleSMS = formData.classScheduleSMS !== undefined ? formData.classScheduleSMS : false;
 
       // Advanced settings
       const debugMode = formData.debugMode || false;
@@ -1055,6 +1742,7 @@ function SettingsPage() {
         // General settings
         schoolName,
         schoolCode,
+        board,
         schoolAddress,
         schoolPhone,
         schoolEmail,
@@ -1063,6 +1751,8 @@ function SettingsPage() {
         academicYear,
         systemLanguage,
         schoolDescription,
+        schoolLogo: schoolLogo || undefined,
+        establishmentYear: establishmentYear || undefined,
 
         // Security settings
         minPasswordLength,
@@ -1088,6 +1778,24 @@ function SettingsPage() {
         darkMode,
         rtlSupport,
 
+        // Public pages settings
+        galleryPageEnabled,
+        aboutPageEnabled,
+        contactPageEnabled,
+
+        // Contact page content
+        contactPageTitle,
+        contactPageSubtitle,
+        contactPhones,
+        contactEmails,
+        contactAddress,
+        contactHours,
+        contactDepartments,
+        contactMapEmbedCode,
+        contactMapAddress,
+        contactSocialMedia,
+        contactFormSubjects,
+
         // Notification settings
         smtpServer,
         smtpPort,
@@ -1095,14 +1803,48 @@ function SettingsPage() {
         smtpPassword,
         studentRegistrationEmail,
         studentRegistrationPush,
+        studentRegistrationSMS,
         paymentReminderEmail,
         paymentReminderPush,
+        paymentReminderSMS,
         attendanceReportEmail,
         attendanceReportPush,
+        attendanceReportSMS,
         systemAlertEmail,
         systemAlertPush,
         examScheduleEmail,
         examSchedulePush,
+        examScheduleSMS,
+        examResultsEmail,
+        examResultsPush,
+        examResultsSMS,
+        homeworkAssignmentEmail,
+        homeworkAssignmentPush,
+        homeworkReminderEmail,
+        homeworkReminderPush,
+        classAnnouncementEmail,
+        classAnnouncementPush,
+        noticeNotificationEmail,
+        noticeNotificationPush,
+        eventReminderEmail,
+        eventReminderPush,
+        messageNotificationEmail,
+        messageNotificationPush,
+        messageNotificationSMS,
+        complaintResponseEmail,
+        complaintResponsePush,
+        feePaymentConfirmationEmail,
+        feePaymentConfirmationPush,
+        feePaymentConfirmationSMS,
+        admissionConfirmationEmail,
+        admissionConfirmationPush,
+        admissionConfirmationSMS,
+        teacherAssignmentEmail,
+        teacherAssignmentPush,
+        teacherAssignmentSMS,
+        classScheduleEmail,
+        classSchedulePush,
+        classScheduleSMS,
 
         // Advanced settings
         debugMode,
@@ -1115,11 +1857,31 @@ function SettingsPage() {
         customCSS,
         customJS,
 
+        // Integrations settings - remove undefined values
+        integrations: integrations.map(i => {
+          // Clean config object to remove undefined values
+          const cleanConfig = Object.fromEntries(
+            Object.entries(i.config).filter(([_, value]) => value !== undefined)
+          );
+          return {
+            id: i.id,
+            name: i.name,
+            status: i.status,
+            config: cleanConfig
+          };
+        }),
+
+        // SMS Templates
+        smsTemplates: smsTemplates.length > 0 ? smsTemplates : undefined,
+
         updatedBy: user.email || 'admin'
       };
 
-      console.log('Saving settings:', settingsToSave);
-      await settingsQueries.saveSettings(settingsToSave, user.email || 'admin');
+      // Remove undefined values from settingsToSave recursively (Firestore doesn't allow undefined)
+      const cleanSettings = removeUndefinedValues(settingsToSave) as Partial<SystemSettings>;
+
+      console.log('Saving settings:', cleanSettings);
+      await settingsQueries.saveSettings(cleanSettings, user.email || 'admin');
 
       setSaveMessage('সেটিংস সফলভাবে সংরক্ষণ করা হয়েছে!');
       setTimeout(() => setSaveMessage(''), 3000);
@@ -1232,32 +1994,29 @@ function SettingsPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Heart, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: true },
   ];
 
   const settingsTabs = [
     { id: 'general', label: 'সাধারণ', icon: Settings, description: 'বেসিক সিস্টেম কনফিগারেশন' },
-    { id: 'fees', label: 'ফি সেটআপ', icon: CreditCard, description: 'সকল ধরনের ফি কনফিগারেশন' },
     { id: 'users', label: 'ব্যবহারকারী', icon: UserIcon, description: 'ব্যবহারকারী ম্যানেজমেন্ট এবং রোল' },
-    { id: 'security', label: 'নিরাপত্তা', icon: Shield, description: 'পাসওয়ার্ড এবং অ্যাক্সেস কন্ট্রোল' },
-    { id: 'database', label: 'ডেটাবেস', icon: Database, description: 'ডেটাবেস ম্যানেজমেন্ট এবং ব্যাকআপ' },
-    { id: 'appearance', label: 'চেহারা', icon: Palette, description: 'থিম এবং ইন্টারফেস কাস্টমাইজেশন' },
-    { id: 'system', label: 'সিস্টেম', icon: Server, description: 'সিস্টেম মনিটরিং এবং পারফরম্যান্স' },
+    { id: 'publicPages', label: 'পাবলিক পেজ', icon: Globe, description: 'গ্যালারী, পরিচিতি, যোগাযোগ পেজ নিয়ন্ত্রণ' },
     { id: 'notifications', label: 'নোটিফিকেশন', icon: Bell, description: 'ইমেইল এবং পুশ নোটিফিকেশন' },
     { id: 'integrations', label: 'ইন্টিগ্রেশন', icon: Wifi, description: 'তৃতীয় পক্ষের সার্ভিস ইন্টিগ্রেশন' },
-    { id: 'audit', label: 'অডিট লগ', icon: FileText, description: 'সিস্টেম অ্যাক্টিভিটি লগ' },
-    { id: 'advanced', label: 'অ্যাডভান্সড', icon: Zap, description: 'অ্যাডভান্সড সিস্টেম সেটিংস' },
   ];
 
   return (
@@ -1336,10 +2095,101 @@ function SettingsPage() {
                   />
                 </div>
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">
-                    {user?.email?.charAt(0).toUpperCase()}
-                  </span>
+                
+                {/* User Profile Dropdown */}
+                <div className="relative">
+                  <button
+                    onClick={() => setShowUserMenu(!showUserMenu)}
+                    className="flex items-center space-x-2 hover:bg-gray-100 rounded-lg p-2 transition-colors"
+                  >
+                    <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                      {((authUserData as any)?.photoURL || userData?.photoURL || user?.photoURL) && !imageError ? (
+                        <img
+                          src={(authUserData as any)?.photoURL || userData?.photoURL || user?.photoURL || ''}
+                          alt="Profile"
+                          className="w-full h-full object-cover"
+                          onError={() => {
+                            setImageError(true);
+                          }}
+                        />
+                      ) : (
+                        <span className="text-white font-medium text-sm">
+                          {(user?.email?.charAt(0) || userData?.email?.charAt(0) || authUserData?.email?.charAt(0) || 'U').toUpperCase()}
+                        </span>
+                      )}
+                    </div>
+                    <ChevronDown className="w-4 h-4 text-gray-600" />
+                  </button>
+
+                  {showUserMenu && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-10"
+                        onClick={() => setShowUserMenu(false)}
+                      ></div>
+                      <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-lg border border-gray-200 z-20">
+                        <div className="p-4 border-b border-gray-200">
+                          <div className="flex items-center space-x-3">
+                            <div className="w-12 h-12 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                              {((authUserData as any)?.photoURL || userData?.photoURL || user?.photoURL) && !imageError ? (
+                                <img
+                                  src={(authUserData as any)?.photoURL || userData?.photoURL || user?.photoURL || ''}
+                                  alt="Profile"
+                                  className="w-full h-full object-cover"
+                                  onError={() => {
+                                    setImageError(true);
+                                  }}
+                                />
+                              ) : (
+                                <span className="text-white font-medium">
+                                  {(user?.email?.charAt(0) || userData?.email?.charAt(0) || authUserData?.email?.charAt(0) || 'U').toUpperCase()}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-gray-900 truncate">
+                                {(userData as any)?.name || authUserData?.displayName || user?.displayName || user?.email?.split('@')[0] || 'অ্যাডমিন'}
+                              </p>
+                              <p className="text-xs text-gray-500 truncate">
+                                {user?.email || (userData as any)?.email || authUserData?.email || ''}
+                              </p>
+                              <span className="inline-block mt-1 px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-800 rounded">
+                                {(userData as any)?.role === 'super_admin' ? 'সুপার অ্যাডমিন' : 'অ্যাডমিন'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="py-1">
+                          <Link
+                            href="/admin/profile"
+                            onClick={() => setShowUserMenu(false)}
+                            className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                          >
+                            <UserCircle className="w-4 h-4 mr-3" />
+                            প্রোফাইল
+                          </Link>
+                          <Link
+                            href="/admin/settings"
+                            onClick={() => setShowUserMenu(false)}
+                            className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                          >
+                            <Settings className="w-4 h-4 mr-3" />
+                            সেটিংস
+                          </Link>
+                          <button
+                            onClick={() => {
+                              setShowUserMenu(false);
+                              auth.signOut();
+                            }}
+                            className="flex items-center w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                          >
+                            <LogOut className="w-4 h-4 mr-3" />
+                            লগআউট
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -1403,217 +2253,6 @@ function SettingsPage() {
 
                 {/* Main Settings Content */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-                  {activeTab === 'fees' && (
-                    <div>
-                      <div className="flex items-center justify-between mb-6">
-                        <div>
-                          <h3 className="text-xl font-semibold text-gray-900">ফি সেটআপ এবং কনফিগারেশন</h3>
-                          <p className="text-sm text-gray-600 mt-1">সকল ধরনের ফি এবং চার্জ কনফিগার করুন</p>
-                        </div>
-                        <button
-                          onClick={openNewFeeModal}
-                          className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center space-x-2"
-                        >
-                          <Plus className="w-4 h-4" />
-                          <span>নতুন ফি যোগ করুন</span>
-                        </button>
-                      </div>
-
-                      <div className="space-y-6">
-                        {/* Fee Categories */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                          {fees.length > 0 ? fees.map((fee, index) => (
-                            <div key={index} className="bg-white border border-gray-200 rounded-xl p-6 hover:shadow-lg transition-shadow">
-                              <div className="flex items-center justify-between mb-4">
-                                <div className="flex items-center space-x-3">
-                            <div className="text-2xl">{fee.icon || '💰'}</div>
-                                  <div>
-                                    <h4 className="font-semibold text-gray-900">{fee.name}</h4>
-                                    <p className="text-sm text-gray-600">{fee.students} জন শিক্ষার্থী</p>
-                                  </div>
-                                </div>
-                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                                  fee.status === 'সক্রিয়'
-                                    ? 'bg-green-100 text-green-800'
-                                    : 'bg-red-100 text-red-800'
-                                }`}>
-                                  {fee.status}
-                                </span>
-                              </div>
-
-                              <div className="space-y-3">
-                                <div className="flex items-center justify-between">
-                                  <span className="text-sm text-gray-600">পরিমাণ:</span>
-                                  <span className="font-bold text-lg text-gray-900">৳{fee.amount}</span>
-                                </div>
-
-                                <div className="flex space-x-2">
-                                  <button
-                                    onClick={() => openEditFeeModal(fee)}
-                                    className="flex-1 bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700 text-sm flex items-center justify-center space-x-1"
-                                  >
-                                    <Edit3 className="w-3 h-3" />
-                                    <span>সম্পাদনা</span>
-                                  </button>
-                                  <button className="flex-1 bg-gray-100 text-gray-700 px-3 py-2 rounded-lg hover:bg-gray-200 text-sm flex items-center justify-center space-x-1">
-                                    <Eye className="w-3 h-3" />
-                                    <span>দেখুন</span>
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                          )) : (
-                            <div className="col-span-full text-center py-8 text-gray-500">
-                              কোনো ফি কনফিগার করা হয়নি
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Quick Fee Type Selection */}
-                        <div className="bg-white border border-gray-200 rounded-xl p-6">
-                          <h4 className="font-semibold text-gray-900 mb-6">নতুন ফি যোগ করুন</h4>
-
-                          {/* Fee Type Cards */}
-                          <div className="mb-8">
-                            <h5 className="text-sm font-medium text-gray-700 mb-4">ফি এর ধরন নির্বাচন করুন</h5>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                              <div
-                                onClick={() => setFeeFormData({...feeFormData, name: 'মাসিক ফি', type: 'monthly', amount: '500'})}
-                                className={`p-4 border-2 rounded-xl cursor-pointer transition-all hover:shadow-md ${
-                                  feeFormData.name === 'মাসিক ফি' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
-                                }`}
-                              >
-                                <div className="text-center">
-                                  <h6 className="font-medium text-gray-900">মাসিক ফি</h6>
-                                  <p className="text-2xl font-bold text-blue-600 mt-2">৫০০</p>
-                                </div>
-                              </div>
-
-                              <div
-                                onClick={() => setFeeFormData({...feeFormData, name: 'সেশন ফি', type: 'yearly', amount: '1000'})}
-                                className={`p-4 border-2 rounded-xl cursor-pointer transition-all hover:shadow-md ${
-                                  feeFormData.name === 'সেশন ফি' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
-                                }`}
-                              >
-                                <div className="text-center">
-                                  <h6 className="font-medium text-gray-900">সেশন ফি</h6>
-                                  <p className="text-2xl font-bold text-green-600 mt-2">১০০০</p>
-                                </div>
-                              </div>
-
-                              <div
-                                onClick={() => setFeeFormData({...feeFormData, name: 'ভর্তি ফি', type: 'one-time', amount: '1200'})}
-                                className={`p-4 border-2 rounded-xl cursor-pointer transition-all hover:shadow-md ${
-                                  feeFormData.name === 'ভর্তি ফি' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
-                                }`}
-                              >
-                                <div className="text-center">
-                                  <h6 className="font-medium text-gray-900">ভর্তি ফি</h6>
-                                  <p className="text-2xl font-bold text-purple-600 mt-2">১২০০</p>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Class Selection Cards */}
-                          <div>
-                            <h5 className="text-sm font-medium text-gray-700 mb-4">প্রযোজ্য ক্লাস নির্বাচন করুন</h5>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                              <div
-                                onClick={() => setFeeFormData({...feeFormData, applicableClasses: 'all'})}
-                                className={`p-4 border-2 rounded-xl cursor-pointer transition-all hover:shadow-md ${
-                                  feeFormData.applicableClasses === 'all' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
-                                }`}
-                              >
-                                <div className="text-center">
-                                  <h6 className="font-medium text-gray-900">সকল ক্লাস</h6>
-                                  <p className="text-sm text-gray-600 mt-1">সমস্ত ক্লাসের জন্য</p>
-                                </div>
-                              </div>
-
-                              <div
-                                onClick={() => setFeeFormData({...feeFormData, applicableClasses: 'term-1'})}
-                                className={`p-4 border-2 rounded-xl cursor-pointer transition-all hover:shadow-md ${
-                                  feeFormData.applicableClasses === 'term-1' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
-                                }`}
-                              >
-                                <div className="text-center">
-                                  <h6 className="font-medium text-gray-900">১ম টার্ম</h6>
-                                  <p className="text-sm text-gray-600 mt-1">প্রথম টার্মের জন্য</p>
-                                </div>
-                              </div>
-
-                              <div
-                                onClick={() => setFeeFormData({...feeFormData, applicableClasses: 'annual'})}
-                                className={`p-4 border-2 rounded-xl cursor-pointer transition-all hover:shadow-md ${
-                                  feeFormData.applicableClasses === 'annual' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
-                                }`}
-                              >
-                                <div className="text-center">
-                                  <h6 className="font-medium text-gray-900">বার্ষিক</h6>
-                                  <p className="text-sm text-gray-600 mt-1">সম্পূর্ণ বছরের জন্য</p>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Custom Amount Input */}
-                          <div className="mt-6 pt-6 border-t border-gray-200">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                  কাস্টম পরিমাণ (টাকা)
-                                </label>
-                                <input
-                                  type="text"
-                                  value={feeFormData.amount}
-                                  onChange={(e) => {
-                                    const englishValue = convertBengaliToEnglish(e.target.value);
-                                    setFeeFormData({...feeFormData, amount: englishValue});
-                                  }}
-                                  placeholder="যেমন: ১৫০০"
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                  বর্ণনা
-                                </label>
-                                <input
-                                  type="text"
-                                  value={feeFormData.description}
-                                  onChange={(e) => setFeeFormData({...feeFormData, description: e.target.value})}
-                                  placeholder="এই ফি কি জন্য নেওয়া হয়..."
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                />
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Action Buttons */}
-                          <div className="mt-6 pt-6 border-t border-gray-200 flex justify-end space-x-3">
-                            <button
-                              onClick={resetFeeForm}
-                              className="px-4 py-2 text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50"
-                            >
-                              রিসেট
-                            </button>
-                            <button
-                              onClick={handleFeeSubmit}
-                              className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center space-x-2"
-                            >
-                              <Save className="w-4 h-4" />
-                              <span>ফি সংরক্ষণ করুন</span>
-                            </button>
-                          </div>
-                        </div>
-
-
-                      </div>
-                    </div>
-                  )}
-
                   {activeTab === 'general' && (
                     <div>
                       <div className="flex items-center justify-between mb-6">
@@ -1641,8 +2280,14 @@ function SettingsPage() {
                               value={formData.schoolName}
                               onChange={(e) => setFormData({...formData, schoolName: e.target.value})}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              placeholder="স্কুলের পুরো নাম"
+                              placeholder="স্কুলের পুরো নাম (যেমন: ইকরা নূরানী একাডেমি)"
+                              required
                             />
+                            {!formData.schoolName && (
+                              <p className="mt-1 text-sm text-yellow-600">
+                                ⚠️ স্কুলের নাম সেট করুন, অন্যথায় "আমার স্কুল" দেখাবে
+                              </p>
+                            )}
                           </div>
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1653,7 +2298,7 @@ function SettingsPage() {
                               value={formData.schoolCode}
                               onChange={(e) => setFormData({...formData, schoolCode: e.target.value})}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              placeholder="যেমন: IQRA-2025"
+                              placeholder="যেমন: AMAR-2026"
                             />
                           </div>
                           <div>
@@ -1728,6 +2373,27 @@ function SettingsPage() {
                           </div>
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-2">
+                              বোর্ড
+                            </label>
+                            <input
+                              type="text"
+                              value={formData.board}
+                              onChange={(e) => setFormData({...formData, board: e.target.value})}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2"
+                              placeholder="যেমন: ঢাকা, চট্টগ্রাম, রাজশাহী"
+                            />
+                            {formData.board && formData.board.trim() && (
+                              <select
+                                value={formData.board}
+                                disabled
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700 cursor-not-allowed"
+                              >
+                                <option value={formData.board}>{formData.board}</option>
+                              </select>
+                            )}
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
                               সিস্টেম ল্যাংগুয়েজ
                             </label>
                             <select 
@@ -1738,6 +2404,61 @@ function SettingsPage() {
                               <option value="en">English</option>
                             </select>
                           </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            স্কুলের ঠিকানা
+                          </label>
+                          <input
+                            type="text"
+                            value={formData.schoolAddress}
+                            onChange={(e) => setFormData({...formData, schoolAddress: e.target.value})}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="যেমন: ঢাকা, বাংলাদেশ"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            প্রতিষ্ঠার সাল
+                          </label>
+                          <input
+                            type="text"
+                            value={formData.establishmentYear}
+                            onChange={(e) => setFormData({...formData, establishmentYear: e.target.value})}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="যেমন: ২০১৮"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">বাংলা বা ইংরেজি অংকে সাল লিখুন</p>
+                        </div>
+                      </div>
+
+                      <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            মোবাইল নাম্বার
+                          </label>
+                          <input
+                            type="text"
+                            value={formData.schoolPhone}
+                            onChange={(e) => setFormData({...formData, schoolPhone: e.target.value})}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="যেমন: +8801712345678"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            ইমেইল
+                          </label>
+                          <input
+                            type="email"
+                            value={formData.schoolEmail}
+                            onChange={(e) => setFormData({...formData, schoolEmail: e.target.value})}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="যেমন: info@iqraschool.edu.bd"
+                          />
                         </div>
                       </div>
 
@@ -1753,6 +2474,46 @@ function SettingsPage() {
                           placeholder="স্কুলের বর্ণনা লিখুন..."
                         />
                       </div>
+
+                      <div className="mt-6">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          স্কুল লোগো (ফাইল এক্সপোর্টের জন্য)
+                        </label>
+                        <div className="space-y-4">
+                          {formData.schoolLogo && (
+                            <div className="mb-4">
+                              <p className="text-sm text-gray-600 mb-2">বর্তমান লোগো:</p>
+                              <div className="relative inline-block">
+                                <img 
+                                  src={formData.schoolLogo} 
+                                  alt="School Logo" 
+                                  className="max-w-xs max-h-32 object-contain border border-gray-300 rounded-lg p-2 bg-white"
+                                />
+                                <button
+                                  onClick={() => setFormData({...formData, schoolLogo: ''})}
+                                  className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-1 hover:bg-red-600 -mt-2 -mr-2"
+                                  title="লোগো সরান"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          <ImageKitUploader
+                            type="school"
+                            schoolId={SCHOOL_ID}
+                            onUploadSuccess={(file) => {
+                              if (file && file.url) {
+                                setFormData({...formData, schoolLogo: file.url});
+                              }
+                            }}
+                            className="w-full"
+                          />
+                          <p className="text-xs text-gray-500">
+                            ফাইল এক্সপোর্ট (PDF, Excel, ইত্যাদি) করার সময় এই লোগো ব্যবহার করা হবে।
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   )}
 
@@ -1761,454 +2522,825 @@ function SettingsPage() {
                       <div className="flex items-center justify-between mb-6">
                         <div>
                           <h3 className="text-xl font-semibold text-gray-900">ব্যবহারকারী ম্যানেজমেন্ট</h3>
-                          <p className="text-sm text-gray-600 mt-1">ব্যবহারকারী রোল এবং অনুমতি সেটিংস</p>
+                          <p className="text-sm text-gray-600 mt-1">অনুমোদনের জন্য অপেক্ষমান এবং অনুমোদনপ্রাপ্ত ব্যবহারকারী (অ্যাডমিন, শিক্ষক, সুপার অ্যাডমিন)</p>
                         </div>
-                        <button className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center space-x-2">
-                          <Plus className="w-4 h-4" />
-                          <span>নতুন রোল যোগ করুন</span>
-                        </button>
-                      </div>
-
-                      <div className="space-y-4">
-                        {/* User Role Cards */}
-                        {[
-                          { role: 'super_admin', name: 'সুপার অ্যাডমিন', count: 2, color: 'red' },
-                          { role: 'admin', name: 'অ্যাডমিন', count: 5, color: 'blue' },
-                          { role: 'teacher', name: 'শিক্ষক', count: 45, color: 'green' },
-                          { role: 'parent', name: 'অভিভাবক', count: 234, color: 'purple' },
-                          { role: 'student', name: 'শিক্ষার্থী', count: 1247, color: 'orange' }
-                        ].map((role) => (
-                          <div key={role.role} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                            <div className="flex items-center space-x-4">
-                              <div className={`w-3 h-3 bg-${role.color}-500 rounded-full`}></div>
-                              <div>
-                                <h4 className="font-medium text-gray-900">{role.name}</h4>
-                                <p className="text-sm text-gray-600">মোট {role.count} জন ব্যবহারকারী</p>
-                              </div>
-                            </div>
-                            <div className="flex items-center space-x-2">
-                              <button className="text-blue-600 hover:text-blue-800">
-                                <Edit3 className="w-4 h-4" />
-                              </button>
-                              <button className="text-red-600 hover:text-red-800">
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-
-                        {/* Permission Settings */}
-                        <div className="mt-8">
-                          <h4 className="font-medium text-gray-900 mb-4">ডিফল্ট অনুমতি সেটিংস</h4>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {[
-                              { label: 'নতুন ব্যবহারকারী নিবন্ধন', defaultChecked: true },
-                              { label: 'ইমেইল যাচাইকরণ প্রয়োজন', defaultChecked: true },
-                              { label: 'অ্যাডমিন অনুমোদন প্রয়োজন', defaultChecked: false },
-                              { label: 'পাসওয়ার্ড রিসেট অনুমতি', defaultChecked: true },
-                              { label: 'প্রোফাইল সম্পাদনা অনুমতি', defaultChecked: true },
-                              { label: 'ডেটা এক্সপোর্ট অনুমতি', defaultChecked: false }
-                            ].map((setting, index) => (
-                              <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                                <span className="text-sm text-gray-700">{setting.label}</span>
-                                <input
-                                  type="checkbox"
-                                  defaultChecked={setting.defaultChecked}
-                                  className="h-4 w-4 text-blue-600"
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {activeTab === 'security' && (
-                    <div>
-                      <div className="flex items-center justify-between mb-6">
-                        <div>
-                          <h3 className="text-xl font-semibold text-gray-900">নিরাপত্তা সেটিংস</h3>
-                          <p className="text-sm text-gray-600 mt-1">পাসওয়ার্ড এবং অ্যাক্সেস কন্ট্রোল</p>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <Shield className="w-5 h-5 text-green-600" />
-                          <span className="text-sm text-green-600">সুরক্ষিত</span>
-                        </div>
-                      </div>
-
-                      <div className="space-y-6">
-                        {/* Password Policy */}
-                        <div className="p-4 bg-blue-50 rounded-lg">
-                          <h4 className="font-medium text-blue-900 mb-3">পাসওয়ার্ড নীতি</h4>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                ন্যূনতম দৈর্ঘ্য
-                              </label>
-                              <input
-                                type="number"
-                                defaultValue="8"
-                                min="6"
-                                max="20"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                সর্বোচ্চ বয়স (দিন)
-                              </label>
-                              <input
-                                type="number"
-                                defaultValue="90"
-                                min="30"
-                                max="365"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              />
-                            </div>
-                          </div>
-                          <div className="mt-4 space-y-2">
-                            {[
-                              { label: 'বড় হাতের অক্ষর প্রয়োজন', checked: true },
-                              { label: 'ছোট হাতের অক্ষর প্রয়োজন', checked: true },
-                              { label: 'সংখ্যা প্রয়োজন', checked: true },
-                              { label: 'বিশেষ অক্ষর প্রয়োজন', checked: false },
-                              { label: 'পুনরাবৃত্তি পাসওয়ার্ড প্রতিরোধ', checked: true }
-                            ].map((rule, index) => (
-                              <div key={index} className="flex items-center space-x-2">
-                                <input
-                                  type="checkbox"
-                                  defaultChecked={rule.checked}
-                                  className="h-4 w-4 text-blue-600"
-                                />
-                                <span className="text-sm text-gray-700">{rule.label}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        {/* Two-Factor Authentication */}
-                        <div className="p-4 bg-green-50 rounded-lg">
-                          <h4 className="font-medium text-green-900 mb-3">টু-ফ্যাক্টর অথেন্টিকেশন</h4>
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="font-medium text-gray-900">অ্যাডমিন অ্যাকাউন্টের জন্য 2FA</p>
-                                <p className="text-sm text-gray-600">অ্যাডমিন এবং সুপার অ্যাডমিনদের জন্য বাধ্যতামূলক</p>
-                              </div>
-                              <input type="checkbox" defaultChecked className="h-4 w-4 text-green-600" />
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="font-medium text-gray-900">সকল ব্যবহারকারীর জন্য 2FA</p>
-                                <p className="text-sm text-gray-600">সমস্ত ব্যবহারকারীর জন্য ঐচ্ছিক</p>
-                              </div>
-                              <input type="checkbox" className="h-4 w-4 text-green-600" />
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Session Management */}
-                        <div className="p-4 bg-purple-50 rounded-lg">
-                          <h4 className="font-medium text-purple-900 mb-3">সেশন ম্যানেজমেন্ট</h4>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                সেশন টাইমআউট (মিনিট)
-                              </label>
-                              <input
-                                type="number"
-                                defaultValue="30"
-                                min="5"
-                                max="480"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                সর্বোচ্চ সক্রিয় সেশন
-                              </label>
-                              <input
-                                type="number"
-                                defaultValue="5"
-                                min="1"
-                                max="10"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {activeTab === 'database' && (
-                    <div>
-                      <div className="flex items-center justify-between mb-6">
-                        <div>
-                          <h3 className="text-xl font-semibold text-gray-900">ডেটাবেস ম্যানেজমেন্ট</h3>
-                          <p className="text-sm text-gray-600 mt-1">ডেটাবেস ব্যাকআপ এবং মেইনটেন্যান্স</p>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <Database className="w-5 h-5 text-blue-600" />
-                          <span className="text-sm text-blue-600">সংযুক্ত</span>
-                        </div>
-                      </div>
-
-                      <div className="space-y-6">
-                        {/* Database Status */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                          <div className="p-4 bg-green-50 rounded-lg text-center">
-                            <CheckCircle className="w-8 h-8 mx-auto mb-2 text-green-600" />
-                            <div className="font-medium text-green-900">ডেটাবেস স্বাস্থ্য</div>
-                            <div className="text-sm text-green-600">স্বাভাবিক</div>
-                          </div>
-                          <div className="p-4 bg-blue-50 rounded-lg text-center">
-                            <HardDrive className="w-8 h-8 mx-auto mb-2 text-blue-600" />
-                            <div className="font-medium text-blue-900">স্টোরেজ ব্যবহার</div>
-                            <div className="text-sm text-blue-600">{systemStats.storage.used}GB / {systemStats.storage.total}GB</div>
-                          </div>
-                          <div className="p-4 bg-purple-50 rounded-lg text-center">
-                            <Clock className="w-8 h-8 mx-auto mb-2 text-purple-600" />
-                            <div className="font-medium text-purple-900">লাস্ট ব্যাকআপ</div>
-                            <div className="text-sm text-purple-600">২ ঘন্টা আগে</div>
-                          </div>
-                        </div>
-
-                        {/* Backup Settings */}
-                        <div className="p-4 bg-blue-50 rounded-lg">
-                          <h4 className="font-medium text-blue-900 mb-3">ব্যাকআপ সেটিংস</h4>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                ব্যাকআপ ফ্রিকোয়েন্সি
-                              </label>
-                              <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                                <option value="daily">দৈনিক</option>
-                                <option value="weekly">সাপ্তাহিক</option>
-                                <option value="monthly">মাসিক</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                ব্যাকআপ রিটেনশন (দিন)
-                              </label>
-                              <input
-                                type="number"
-                                defaultValue="30"
-                                min="7"
-                                max="365"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              />
-                            </div>
-                          </div>
-                          <div className="mt-4 flex space-x-3">
-                            <button
-                              onClick={handleBackup}
-                              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2"
-                            >
-                              <Archive className="w-4 h-4" />
-                              <span>ম্যানুয়াল ব্যাকআপ</span>
-                            </button>
-                            <button className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center space-x-2">
-                              <RefreshCw className="w-4 h-4" />
-                              <span>সিঙ্ক্রোনাইজ</span>
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Data Management */}
-                        <div className="p-4 bg-yellow-50 rounded-lg">
-                          <h4 className="font-medium text-yellow-900 mb-3">ডেটা ম্যানেজমেন্ট</h4>
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between p-3 bg-white rounded-lg">
-                              <div>
-                                <p className="font-medium text-gray-900">সমস্ত ডেটা এক্সপোর্ট</p>
-                                <p className="text-sm text-gray-600">সম্পূর্ণ ডেটাবেস এক্সপোর্ট করুন</p>
-                              </div>
-                              <button
-                                onClick={handleExportData}
-                                className="bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 flex items-center space-x-2"
-                              >
-                                <Download className="w-4 h-4" />
-                                <span>এক্সপোর্ট</span>
-                              </button>
-                            </div>
-                            <div className="flex items-center justify-between p-3 bg-white rounded-lg">
-                              <div>
-                                <p className="font-medium text-gray-900">ক্যাশে পরিষ্কার করুন</p>
-                                <p className="text-sm text-gray-600">সিস্টেম ক্যাশে পরিষ্কার করুন</p>
-                              </div>
-                              <button
-                                onClick={handleClearCache}
-                                className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 flex items-center space-x-2"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                                <span>পরিষ্কার</span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {activeTab === 'appearance' && (
-                    <div>
-                      <div className="flex items-center justify-between mb-6">
-                        <div>
-                          <h3 className="text-xl font-semibold text-gray-900">চেহারা কাস্টমাইজেশন</h3>
-                          <p className="text-sm text-gray-600 mt-1">থিম এবং ইন্টারফেস সেটিংস</p>
-                        </div>
-                        <button className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center space-x-2">
-                          <Palette className="w-4 h-4" />
-                          <span>প্রিভিউ</span>
-                        </button>
-                      </div>
-
-                      <div className="space-y-6">
-                        {/* Theme Selection */}
-                        <div>
-                          <h4 className="font-medium text-gray-900 mb-3">থিম সিলেকশন</h4>
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            {[
-                              { name: 'লাইট', color: 'white', preview: 'bg-white border-2 border-gray-200' },
-                              { name: 'ডার্ক', color: 'gray-900', preview: 'bg-gray-900 border-2 border-gray-700' },
-                              { name: 'ব্লু', color: 'blue-600', preview: 'bg-blue-600 border-2 border-blue-700' }
-                            ].map((theme) => (
-                              <div key={theme.name} className="text-center p-4 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100">
-                                <div className={`w-16 h-16 mx-auto mb-3 rounded-lg ${theme.preview}`}></div>
-                                <div className="font-medium text-gray-900">{theme.name}</div>
-                                <input type="radio" name="theme" className="mt-2" />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        {/* Color Customization */}
-                        <div>
-                          <h4 className="font-medium text-gray-900 mb-3">প্রাইমারি কালার</h4>
-                          <div className="flex space-x-3">
-                            {[
-                              { color: 'blue', class: 'bg-blue-600' },
-                              { color: 'green', class: 'bg-green-600' },
-                              { color: 'purple', class: 'bg-purple-600' },
-                              { color: 'red', class: 'bg-red-600' },
-                              { color: 'indigo', class: 'bg-indigo-600' },
-                              { color: 'pink', class: 'bg-pink-600' }
-                            ].map((color) => (
-                              <div key={color.color} className={`w-8 h-8 rounded-full ${color.class} cursor-pointer hover:scale-110 transition-transform`}></div>
-                            ))}
-                          </div>
-                        </div>
-
-                        {/* Layout Options */}
-                        <div>
-                          <h4 className="font-medium text-gray-900 mb-3">লেআউট অপশনস</h4>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {[
-                              { label: 'কমপ্যাক্ট মোড', description: 'কম জায়গা নেয়' },
-                              { label: 'সাইডবার কোল্যাপ্স', description: 'সাইডবার লুকান' },
-                              { label: 'ডার্ক মোড', description: 'চোখের জন্য আরামদায়ক' },
-                              { label: 'আরটিএল সাপোর্ট', description: 'ডান থেকে বামে' }
-                            ].map((option, index) => (
-                              <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                                <div>
-                                  <p className="font-medium text-gray-900">{option.label}</p>
-                                  <p className="text-sm text-gray-600">{option.description}</p>
-                                </div>
-                                <input type="checkbox" className="h-4 w-4 text-purple-600" />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {activeTab === 'system' && (
-                    <div>
-                      <div className="flex items-center justify-between mb-6">
-                        <div>
-                          <h3 className="text-xl font-semibold text-gray-900">সিস্টেম মনিটরিং</h3>
-                          <p className="text-sm text-gray-600 mt-1">সিস্টেম পারফরম্যান্স এবং হেলথ</p>
-                        </div>
-                        <button className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center space-x-2">
-                          <RefreshCw className="w-4 h-4" />
+                        <button 
+                          onClick={() => {
+                            loadPendingUsers();
+                            loadApprovedUsers();
+                          }}
+                          disabled={loadingPendingUsers || loadingApprovedUsers}
+                          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2 disabled:opacity-50"
+                        >
+                          <RefreshCw className={`w-4 h-4 ${(loadingPendingUsers || loadingApprovedUsers) ? 'animate-spin' : ''}`} />
                           <span>রিফ্রেশ</span>
                         </button>
                       </div>
 
-                      <div className="space-y-6">
-                        {/* System Metrics */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                          {[
-                            { label: 'CPU Usage', value: `${systemStats.cpu.usage}%`, icon: Cpu, color: 'blue' },
-                            { label: 'Memory Usage', value: `${systemStats.memory.percentage}%`, icon: MemoryStick, color: 'green' },
-                            { label: 'Storage Usage', value: `${systemStats.storage.percentage}%`, icon: HardDrive, color: 'purple' },
-                            { label: 'Active Users', value: systemStats.activeUsers.toString(), icon: Users, color: 'orange' }
-                          ].map((metric) => (
-                            <div key={metric.label} className="p-4 bg-gray-50 rounded-lg text-center">
-                              <metric.icon className={`w-8 h-8 mx-auto mb-2 text-${metric.color}-600`} />
-                              <div className="text-2xl font-bold text-gray-900">{metric.value}</div>
-                              <div className="text-sm text-gray-600">{metric.label}</div>
+                      {/* Stats */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm text-yellow-700 mb-1">অপেক্ষমান আবেদন</p>
+                              <p className="text-2xl font-bold text-yellow-900">{pendingUsers.length}</p>
+                            </div>
+                            <Clock className="w-8 h-8 text-yellow-600" />
+                          </div>
+                        </div>
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm text-green-700 mb-1">অনুমোদনপ্রাপ্ত</p>
+                              <p className="text-2xl font-bold text-green-900">{approvedUsers.length}</p>
+                            </div>
+                            <CheckCircle className="w-8 h-8 text-green-600" />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Pending Users Section */}
+                      <div className="mb-8">
+                        <h4 className="text-lg font-semibold text-gray-900 mb-4">অপেক্ষমান আবেদনসমূহ</h4>
+
+                      {userData?.role !== 'super_admin' ? (
+                        <div className="text-center py-12 bg-yellow-50 rounded-lg border border-yellow-200">
+                          <AlertTriangle className="w-12 h-12 mx-auto mb-4 text-yellow-600" />
+                          <h4 className="text-lg font-semibold text-yellow-900 mb-2">অনুমতি নেই</h4>
+                          <p className="text-sm text-yellow-700">
+                            শুধুমাত্র সুপার অ্যাডমিন এই পেজটি দেখতে পারেন এবং আবেদন অনুমোদন করতে পারেন।
+                          </p>
+                        </div>
+                      ) : loadingPendingUsers ? (
+                        <div className="text-center py-12">
+                          <Loader2 className="w-8 h-8 mx-auto mb-4 animate-spin text-blue-600" />
+                          <p className="text-gray-600">আবেদনসমূহ লোড হচ্ছে...</p>
+                        </div>
+                      ) : pendingUsers.length === 0 ? (
+                        <div className="text-center py-12 bg-green-50 rounded-lg border border-green-200">
+                          <CheckCircle className="w-12 h-12 mx-auto mb-4 text-green-600" />
+                          <h4 className="text-lg font-semibold text-green-900 mb-2">কোনো অপেক্ষমান আবেদন নেই</h4>
+                          <p className="text-sm text-green-700">
+                            বর্তমানে অনুমোদনের জন্য অপেক্ষমান কোনো অ্যাডমিন, শিক্ষক বা সুপার অ্যাডমিনের আবেদন নেই।
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {pendingUsers.map((pendingUser) => (
+                            <div 
+                              key={pendingUser.uid} 
+                              className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-md transition-shadow"
+                            >
+                              <div className="flex items-start justify-between">
+                                <div className="flex-1">
+                                  <div className="flex items-center space-x-3 mb-3">
+                                    <div className={`w-10 h-10 rounded-full ${
+                                      pendingUser.role === 'admin' ? 'bg-blue-100' : 
+                                      pendingUser.role === 'super_admin' ? 'bg-red-100' : 
+                                      'bg-green-100'
+                                    } flex items-center justify-center`}>
+                                      <UserIcon className={`w-5 h-5 ${
+                                        pendingUser.role === 'admin' ? 'text-blue-600' : 
+                                        pendingUser.role === 'super_admin' ? 'text-red-600' : 
+                                        'text-green-600'
+                                      }`} />
+                                    </div>
+                                    <div>
+                                      <h4 className="font-semibold text-gray-900 text-lg">{pendingUser.name}</h4>
+                                      <p className="text-sm text-gray-600">
+                                        {pendingUser.role === 'admin' ? 'অ্যাডমিন' : 
+                                         pendingUser.role === 'teacher' ? 'শিক্ষক' : 
+                                         pendingUser.role === 'super_admin' ? 'সুপার অ্যাডমিন' : 
+                                         pendingUser.role}
+                                      </p>
+                                    </div>
+                                    <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                      pendingUser.role === 'admin' 
+                                        ? 'bg-blue-100 text-blue-800' 
+                                        : pendingUser.role === 'super_admin'
+                                        ? 'bg-red-100 text-red-800'
+                                        : 'bg-green-100 text-green-800'
+                                    }`}>
+                                      {pendingUser.role === 'admin' ? 'অ্যাডমিন' : 
+                                       pendingUser.role === 'teacher' ? 'শিক্ষক' : 
+                                       pendingUser.role === 'super_admin' ? 'সুপার অ্যাডমিন' : 
+                                       pendingUser.role}
+                                    </span>
+                                  </div>
+
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                                    <div className="flex items-center space-x-2 text-sm text-gray-600">
+                                      <Mail className="w-4 h-4" />
+                                      <span>{pendingUser.email}</span>
+                                    </div>
+                                    {pendingUser.phone && (
+                                      <div className="flex items-center space-x-2 text-sm text-gray-600">
+                                        <Smartphone className="w-4 h-4" />
+                                        <span>{pendingUser.phone}</span>
+                                      </div>
+                                    )}
+                                    {pendingUser.schoolName && (
+                                      <div className="flex items-center space-x-2 text-sm text-gray-600">
+                                        <Building className="w-4 h-4" />
+                                        <span>{pendingUser.schoolName}</span>
+                                      </div>
+                                    )}
+                                    {pendingUser.createdAt && (
+                                      <div className="flex items-center space-x-2 text-sm text-gray-600">
+                                        <Clock className="w-4 h-4" />
+                                        <span>
+                                          আবেদনের তারিখ: {pendingUser.createdAt.toDate?.().toLocaleDateString('bn-BD') || 'অজানা'}
+                                        </span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center space-x-2 ml-4">
+                                  <button
+                                    onClick={() => handleApproveUser(pendingUser.uid)}
+                                    disabled={updatingUser.has(pendingUser.uid)}
+                                    className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                  >
+                                    {updatingUser.has(pendingUser.uid) ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <CheckCircle className="w-4 h-4" />
+                                    )}
+                                    <span>অনুমোদন</span>
+                                  </button>
+                                  <button
+                                    onClick={() => handleRejectUser(pendingUser.uid)}
+                                    disabled={updatingUser.has(pendingUser.uid)}
+                                    className="flex items-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                  >
+                                    {updatingUser.has(pendingUser.uid) ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <XCircle className="w-4 h-4" />
+                                    )}
+                                    <span>বাতিল</span>
+                                  </button>
+                                </div>
+                              </div>
                             </div>
                           ))}
                         </div>
+                      )}
+                      </div>
 
-                        {/* Performance Settings */}
-                        <div className="p-4 bg-blue-50 rounded-lg">
-                          <h4 className="font-medium text-blue-900 mb-3">পারফরম্যান্স সেটিংস</h4>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                ক্যাশে এক্সপায়ারি (ঘন্টা)
-                              </label>
+                      {/* Approved Users Section */}
+                      <div className="mt-8">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="text-lg font-semibold text-gray-900">অনুমোদনপ্রাপ্ত ব্যবহারকারী</h4>
+                          <div className="flex items-center space-x-3">
+                            <button
+                              onClick={async () => {
+                                if (!confirm('আপনি কি সব অনুমোদনপ্রাপ্ত ব্যবহারকারীর স্কুলের নাম আপডেট করতে চান?')) {
+                                  return;
+                                }
+                                try {
+                                  const currentSettings = await settingsQueries.getSettings();
+                                  const schoolName = currentSettings?.schoolName || SCHOOL_NAME;
+                                  const schoolCode = currentSettings?.schoolCode || SCHOOL_ID;
+
+                                  // Update all approved users
+                                  const updatePromises = approvedUsers.map(user => 
+                                    userQueries.updateUser(user.uid, {
+                                      schoolName: schoolName,
+                                      schoolId: schoolCode
+                                    })
+                                  );
+
+                                  await Promise.all(updatePromises);
+                                  alert('সব ব্যবহারকারীর স্কুলের নাম আপডেট করা হয়েছে!');
+                                  loadApprovedUsers();
+                                } catch (error) {
+                                  console.error('Error updating school names:', error);
+                                  alert('স্কুলের নাম আপডেট করতে সমস্যা হয়েছে');
+                                }
+                              }}
+                              className="px-3 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
+                              title="সব ব্যবহারকারীর স্কুলের নাম আপডেট করুন"
+                            >
+                              স্কুলের নাম আপডেট করুন
+                            </button>
+                            <div className="relative">
+                              <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
                               <input
-                                type="number"
-                                defaultValue="24"
-                                min="1"
-                                max="168"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                type="text"
+                                placeholder="খুঁজুন..."
+                                value={userSearchQuery}
+                                onChange={(e) => setUserSearchQuery(e.target.value)}
+                                className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                               />
                             </div>
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                ম্যাক্সিমাম আপলোড সাইজ (MB)
-                              </label>
-                              <input
-                                type="number"
-                                defaultValue="10"
-                                min="1"
-                                max="100"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              />
-                            </div>
+                            <select
+                              value={userFilter}
+                              onChange={(e) => setUserFilter(e.target.value as any)}
+                              className="px-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            >
+                              <option value="all">সকল</option>
+                              <option value="super_admin">সুপার অ্যাডমিন</option>
+                              <option value="admin">অ্যাডমিন</option>
+                              <option value="teacher">শিক্ষক</option>
+                            </select>
                           </div>
                         </div>
 
-                        {/* System Logs */}
-                        <div className="p-4 bg-gray-50 rounded-lg">
-                          <h4 className="font-medium text-gray-900 mb-3">সিস্টেম লগস</h4>
-                          <div className="space-y-2 max-h-40 overflow-y-auto">
-                            {[
-                              { time: '14:32:15', level: 'INFO', message: 'User login successful' },
-                              { time: '14:30:22', level: 'WARN', message: 'High memory usage detected' },
-                              { time: '14:28:45', level: 'ERROR', message: 'Database connection timeout' },
-                              { time: '14:25:10', level: 'INFO', message: 'Backup completed successfully' }
-                            ].map((log, index) => (
-                              <div key={index} className="flex items-center space-x-4 p-2 bg-white rounded text-sm">
-                                <span className="text-gray-500 w-20">{log.time}</span>
-                                <span className={`px-2 py-1 rounded text-xs ${
-                                  log.level === 'ERROR' ? 'bg-red-100 text-red-800' :
-                                  log.level === 'WARN' ? 'bg-yellow-100 text-yellow-800' :
-                                  'bg-green-100 text-green-800'
-                                }`}>
-                                  {log.level}
-                                </span>
-                                <span className="flex-1 text-gray-700">{log.message}</span>
+                        {loadingApprovedUsers ? (
+                          <div className="text-center py-12">
+                            <Loader2 className="w-8 h-8 mx-auto mb-4 animate-spin text-blue-600" />
+                            <p className="text-gray-600">অনুমোদনপ্রাপ্ত ব্যবহারকারী লোড হচ্ছে...</p>
+                          </div>
+                        ) : filteredApprovedUsers.length === 0 ? (
+                          <div className="text-center py-12 bg-gray-50 rounded-lg border border-gray-200">
+                            <UserIcon className="w-12 h-12 mx-auto mb-4 text-gray-400" />
+                            <h4 className="text-lg font-semibold text-gray-900 mb-2">
+                              {userSearchQuery || userFilter !== 'all' 
+                                ? 'কোনো ব্যবহারকারী পাওয়া যায়নি' 
+                                : 'কোনো অনুমোদনপ্রাপ্ত ব্যবহারকারী নেই'}
+                            </h4>
+                            <p className="text-sm text-gray-600">
+                              {userSearchQuery || userFilter !== 'all'
+                                ? 'আপনার অনুসন্ধানের সাথে মিলে যায় এমন কোনো ব্যবহারকারী নেই'
+                                : 'এখনও কোনো ব্যবহারকারী অনুমোদন দেওয়া হয়নি'}
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                            <div className="overflow-x-auto">
+                              <table className="w-full">
+                                <thead className="bg-gray-50 border-b border-gray-200">
+                                  <tr>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ব্যবহারকারী</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ইমেইল</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ফোন</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ভূমিকা</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">স্কুল</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">অনুমোদনের তারিখ</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">অবস্থা</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="bg-white divide-y divide-gray-200">
+                                  {filteredApprovedUsers.map((approvedUser) => (
+                                    <tr key={approvedUser.uid} className="hover:bg-gray-50">
+                                      <td className="px-6 py-4 whitespace-nowrap">
+                                        <div className="flex items-center">
+                                          <div className={`w-10 h-10 rounded-full ${
+                                            approvedUser.role === 'admin' ? 'bg-blue-100' : 
+                                            approvedUser.role === 'super_admin' ? 'bg-red-100' : 
+                                            'bg-green-100'
+                                          } flex items-center justify-center mr-3`}>
+                                            <UserIcon className={`w-5 h-5 ${
+                                              approvedUser.role === 'admin' ? 'text-blue-600' : 
+                                              approvedUser.role === 'super_admin' ? 'text-red-600' : 
+                                              'text-green-600'
+                                            }`} />
+                                          </div>
+                                          <div>
+                                            <div className="text-sm font-medium text-gray-900">
+                                              {approvedUser.name || 'নাম নেই'}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </td>
+                                      <td className="px-6 py-4 whitespace-nowrap">
+                                        <div className="text-sm text-gray-900">{approvedUser.email}</div>
+                                      </td>
+                                      <td className="px-6 py-4 whitespace-nowrap">
+                                        <div className="text-sm text-gray-900">{approvedUser.phone || '-'}</div>
+                                      </td>
+                                      <td className="px-6 py-4 whitespace-nowrap">
+                                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                                          approvedUser.role === 'admin' 
+                                            ? 'bg-blue-100 text-blue-800' 
+                                            : approvedUser.role === 'super_admin'
+                                            ? 'bg-red-100 text-red-800'
+                                            : 'bg-green-100 text-green-800'
+                                        }`}>
+                                          {approvedUser.role === 'admin' ? 'অ্যাডমিন' : 
+                                           approvedUser.role === 'teacher' ? 'শিক্ষক' : 
+                                           approvedUser.role === 'super_admin' ? 'সুপার অ্যাডমিন' : 
+                                           approvedUser.role}
+                                        </span>
+                                      </td>
+                                      <td className="px-6 py-4 whitespace-nowrap">
+                                        <div className="text-sm text-gray-900">{approvedUser.schoolName || '-'}</div>
+                                      </td>
+                                      <td className="px-6 py-4 whitespace-nowrap">
+                                        <div className="text-sm text-gray-900">
+                                          {approvedUser.createdAt 
+                                            ? (approvedUser.createdAt instanceof Timestamp 
+                                                ? approvedUser.createdAt.toDate().toLocaleDateString('bn-BD')
+                                                : new Date(approvedUser.createdAt).toLocaleDateString('bn-BD'))
+                                            : '-'}
+                                        </div>
+                                      </td>
+                                      <td className="px-6 py-4 whitespace-nowrap">
+                                        <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
+                                          সক্রিয়
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {activeTab === 'publicPages' && (
+                    <div>
+                      <div className="flex items-center justify-between mb-6">
+                        <div>
+                          <h3 className="text-xl font-semibold text-gray-900">পাবলিক পেজ নিয়ন্ত্রণ</h3>
+                          <p className="text-sm text-gray-600 mt-1">গ্যালারী, পরিচিতি, যোগাযোগ পেজ সক্রিয়/নিষ্ক্রিয় করুন</p>
+                        </div>
+                        <button 
+                          onClick={handleSaveSettings}
+                          disabled={saving}
+                          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <Save className="w-4 h-4" />
+                          <span>{saving ? 'সংরক্ষণ হচ্ছে...' : 'সংরক্ষণ করুন'}</span>
+                        </button>
+                      </div>
+
+                      <div className="space-y-4">
+                        {/* Gallery Page */}
+                        <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-md transition-shadow">
+                          <div className="flex items-start justify-between">
+                            <div className="flex items-start space-x-4 flex-1">
+                              <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
+                                <ImageIcon className="w-6 h-6 text-purple-600" />
                               </div>
-                            ))}
+                              <div className="flex-1">
+                                <h4 className="font-semibold text-gray-900 text-lg mb-1">গ্যালারী</h4>
+                                <p className="text-sm text-gray-600 mb-2">
+                                  স্কুলের বিভিন্ন ছবি, ইভেন্ট এবং স্মৃতিচারণ গ্যালারী প্রদর্শন করুন
+                                </p>
+                                <div className="flex items-center space-x-2 text-xs text-gray-500">
+                                  <span>URL:</span>
+                                  <code className="bg-gray-100 px-2 py-1 rounded">/gallery</code>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="ml-4">
+                              <label className="relative inline-flex items-center cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={formData.galleryPageEnabled}
+                                  onChange={(e) => setFormData({...formData, galleryPageEnabled: e.target.checked})}
+                                  className="sr-only peer"
+                                />
+                                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                              </label>
+                            </div>
+                          </div>
+                          <div className={`mt-4 p-3 rounded-lg text-sm ${
+                            formData.galleryPageEnabled 
+                              ? 'bg-green-50 text-green-800 border border-green-200' 
+                              : 'bg-red-50 text-red-800 border border-red-200'
+                          }`}>
+                            {formData.galleryPageEnabled ? (
+                              <span className="flex items-center space-x-2">
+                                <CheckCircle className="w-4 h-4" />
+                                <span>গ্যালারী পেজ সক্রিয় - ব্যবহারকারীরা এই পেজ দেখতে পারবে</span>
+                              </span>
+                            ) : (
+                              <span className="flex items-center space-x-2">
+                                <XCircle className="w-4 h-4" />
+                                <span>গ্যালারী পেজ নিষ্ক্রিয় - ব্যবহারকারীরা এই পেজ দেখতে পারবে না</span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* About Page */}
+                        <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-md transition-shadow">
+                          <div className="flex items-start justify-between">
+                            <div className="flex items-start space-x-4 flex-1">
+                              <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
+                                <Info className="w-6 h-6 text-blue-600" />
+                              </div>
+                              <div className="flex-1">
+                                <h4 className="font-semibold text-gray-900 text-lg mb-1">পরিচিতি</h4>
+                                <p className="text-sm text-gray-600 mb-2">
+                                  স্কুলের সম্পর্কে তথ্য, মিশন, ভিশন এবং ইতিহাস প্রদর্শন করুন
+                                </p>
+                                <div className="flex items-center space-x-2 text-xs text-gray-500">
+                                  <span>URL:</span>
+                                  <code className="bg-gray-100 px-2 py-1 rounded">/about</code>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="ml-4">
+                              <label className="relative inline-flex items-center cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={formData.aboutPageEnabled}
+                                  onChange={(e) => setFormData({...formData, aboutPageEnabled: e.target.checked})}
+                                  className="sr-only peer"
+                                />
+                                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                              </label>
+                            </div>
+                          </div>
+                          <div className={`mt-4 p-3 rounded-lg text-sm ${
+                            formData.aboutPageEnabled 
+                              ? 'bg-green-50 text-green-800 border border-green-200' 
+                              : 'bg-red-50 text-red-800 border border-red-200'
+                          }`}>
+                            {formData.aboutPageEnabled ? (
+                              <span className="flex items-center space-x-2">
+                                <CheckCircle className="w-4 h-4" />
+                                <span>পরিচিতি পেজ সক্রিয় - ব্যবহারকারীরা এই পেজ দেখতে পারবে</span>
+                              </span>
+                            ) : (
+                              <span className="flex items-center space-x-2">
+                                <XCircle className="w-4 h-4" />
+                                <span>পরিচিতি পেজ নিষ্ক্রিয় - ব্যবহারকারীরা এই পেজ দেখতে পারবে না</span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Contact Page */}
+                        <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-md transition-shadow">
+                          <div className="flex items-start justify-between">
+                            <div className="flex items-start space-x-4 flex-1">
+                              <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
+                                <Phone className="w-6 h-6 text-green-600" />
+                              </div>
+                              <div className="flex-1">
+                                <h4 className="font-semibold text-gray-900 text-lg mb-1">যোগাযোগ</h4>
+                                <p className="text-sm text-gray-600 mb-2">
+                                  যোগাযোগের তথ্য, ঠিকানা, ফোন নম্বর এবং যোগাযোগ ফরম প্রদর্শন করুন
+                                </p>
+                                <div className="flex items-center space-x-2 text-xs text-gray-500">
+                                  <span>URL:</span>
+                                  <code className="bg-gray-100 px-2 py-1 rounded">/contact</code>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="ml-4">
+                              <label className="relative inline-flex items-center cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={formData.contactPageEnabled}
+                                  onChange={(e) => setFormData({...formData, contactPageEnabled: e.target.checked})}
+                                  className="sr-only peer"
+                                />
+                                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                              </label>
+                            </div>
+                          </div>
+                          <div className={`mt-4 p-3 rounded-lg text-sm ${
+                            formData.contactPageEnabled 
+                              ? 'bg-green-50 text-green-800 border border-green-200' 
+                              : 'bg-red-50 text-red-800 border border-red-200'
+                          }`}>
+                            {formData.contactPageEnabled ? (
+                              <span className="flex items-center space-x-2">
+                                <CheckCircle className="w-4 h-4" />
+                                <span>যোগাযোগ পেজ সক্রিয় - ব্যবহারকারীরা এই পেজ দেখতে পারবে</span>
+                              </span>
+                            ) : (
+                              <span className="flex items-center space-x-2">
+                                <XCircle className="w-4 h-4" />
+                                <span>যোগাযোগ পেজ নিষ্ক্রিয় - ব্যবহারকারীরা এই পেজ দেখতে পারবে না</span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Links to Control Page for all enabled pages */}
+                        <div className="mt-6 space-y-3">
+                          {(formData.contactPageEnabled || formData.galleryPageEnabled || formData.aboutPageEnabled) && (
+                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <h4 className="font-semibold text-gray-900 mb-1">পেজ কন্টেন্ট সম্পাদনা করুন</h4>
+                                  <p className="text-sm text-gray-600">যোগাযোগ, গ্যালারী এবং পরিচিতি পেজের সকল কন্টেন্ট আলাদা আলাদা ট্যাবে সম্পাদনা করুন</p>
+                                </div>
+                                <button
+                                  onClick={() => router.push('/admin/public-pages-control')}
+                                  className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2"
+                                >
+                                  <Settings className="w-4 h-4" />
+                                  <span>নিয়ন্ত্রণ পেজে যান</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        {/* Contact Page Content Editor - Removed - now in separate control page */}
+                        {false && formData.contactPageEnabled && (
+                          <div className="mt-8 bg-gradient-to-r from-green-50 to-blue-50 border-2 border-green-200 rounded-lg p-6">
+                            <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center space-x-2">
+                              <Phone className="w-6 h-6 text-green-600" />
+                              <span>যোগাযোগ পেজ কন্টেন্ট সম্পাদনা</span>
+                            </h3>
+
+                            <div className="space-y-6">
+                              {/* Header Section */}
+                              <div className="bg-white rounded-lg p-5 border border-gray-200">
+                                <h4 className="font-semibold text-gray-900 mb-4">হেডার সেকশন</h4>
+                                <div className="space-y-4">
+                                  <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                      পেজ শিরোনাম
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={formData.contactPageTitle}
+                                      onChange={(e) => setFormData({...formData, contactPageTitle: e.target.value})}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="যোগাযোগ করুন"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                      সাবটাইটেল
+                                    </label>
+                                    <textarea
+                                      value={formData.contactPageSubtitle}
+                                      onChange={(e) => setFormData({...formData, contactPageSubtitle: e.target.value})}
+                                      rows={2}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="আমাদের সাথে যোগাযোগ করে আপনার প্রশ্নের উত্তর পান..."
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Contact Info Cards */}
+                              <div className="bg-white rounded-lg p-5 border border-gray-200">
+                                <h4 className="font-semibold text-gray-900 mb-4">যোগাযোগের তথ্য (৪টি কার্ড)</h4>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                  {/* Phone */}
+                                  <div className="space-y-2">
+                                    <label className="block text-sm font-medium text-gray-700">ফোন নম্বর (প্রতিটি নতুন লাইনে একটি)</label>
+                                    <textarea
+                                      value={Array.isArray(formData.contactPhones) ? formData.contactPhones.join('\n') : ''}
+                                      onChange={(e) => setFormData({...formData, contactPhones: e.target.value.split('\n').filter(p => p.trim())})}
+                                      rows={3}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="+৮৮০ ১৭১১ ২৩৪৫৬৭&#10;+৮৮০ ১৯১১ ২৩৪৫৬৭"
+                                    />
+                                  </div>
+                                  {/* Email */}
+                                  <div className="space-y-2">
+                                    <label className="block text-sm font-medium text-gray-700">ইমেইল ঠিকানা (প্রতিটি নতুন লাইনে একটি)</label>
+                                    <textarea
+                                      value={Array.isArray(formData.contactEmails) ? formData.contactEmails.join('\n') : ''}
+                                      onChange={(e) => setFormData({...formData, contactEmails: e.target.value.split('\n').filter(e => e.trim())})}
+                                      rows={3}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="info@iqraschool.edu&#10;admission@iqraschool.edu"
+                                    />
+                                  </div>
+                                  {/* Address */}
+                                  <div className="space-y-2">
+                                    <label className="block text-sm font-medium text-gray-700">ঠিকানা (প্রতিটি নতুন লাইনে একটি)</label>
+                                    <textarea
+                                      value={Array.isArray(formData.contactAddress) ? formData.contactAddress.join('\n') : ''}
+                                      onChange={(e) => setFormData({...formData, contactAddress: e.target.value.split('\n').filter(a => a.trim())})}
+                                      rows={3}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="রামপুরা, ঢাকা-১২১৯&#10;বাংলাদেশ"
+                                    />
+                                  </div>
+                                  {/* Hours */}
+                                  <div className="space-y-2">
+                                    <label className="block text-sm font-medium text-gray-700">সময়সূচী (প্রতিটি নতুন লাইনে একটি)</label>
+                                    <textarea
+                                      value={Array.isArray(formData.contactHours) ? formData.contactHours.join('\n') : ''}
+                                      onChange={(e) => setFormData({...formData, contactHours: e.target.value.split('\n').filter(h => h.trim())})}
+                                      rows={3}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="রবি-বৃহ: সকাল ৮টা - বিকাল ৫টা&#10;শুক্র: সকাল ৮টা - দুপুর ১২টা"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Departments */}
+                              <div className="bg-white rounded-lg p-5 border border-gray-200">
+                                <div className="flex items-center justify-between mb-4">
+                                  <h4 className="font-semibold text-gray-900">বিভাগীয় যোগাযোগ</h4>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const newDepts = [...(formData.contactDepartments || []), { name: '', phone: '', email: '', description: '' }];
+                                      setFormData({...formData, contactDepartments: newDepts});
+                                    }}
+                                    className="text-sm bg-blue-600 text-white px-3 py-1 rounded-lg hover:bg-blue-700 flex items-center space-x-1"
+                                  >
+                                    <Plus className="w-4 h-4" />
+                                    <span>বিভাগ যোগ করুন</span>
+                                  </button>
+                                </div>
+                                <div className="space-y-4">
+                                  {(formData.contactDepartments || []).map((dept, index) => (
+                                    <div key={index} className="border border-gray-200 rounded-lg p-4">
+                                      <div className="flex items-center justify-between mb-3">
+                                        <span className="text-sm font-medium text-gray-700">বিভাগ #{index + 1}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const newDepts = formData.contactDepartments?.filter((_, i) => i !== index) || [];
+                                            setFormData({...formData, contactDepartments: newDepts});
+                                          }}
+                                          className="text-red-600 hover:text-red-700"
+                                        >
+                                          <Trash2 className="w-4 h-4" />
+                                        </button>
+                                      </div>
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div>
+                                          <label className="block text-xs text-gray-600 mb-1">নাম</label>
+                                          <input
+                                            type="text"
+                                            value={dept.name}
+                                            onChange={(e) => {
+                                              const newDepts = [...(formData.contactDepartments || [])];
+                                              newDepts[index].name = e.target.value;
+                                              setFormData({...formData, contactDepartments: newDepts});
+                                            }}
+                                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                            placeholder="ভর্তি বিভাগ"
+                                          />
+                                        </div>
+                                        <div>
+                                          <label className="block text-xs text-gray-600 mb-1">ফোন</label>
+                                          <input
+                                            type="text"
+                                            value={dept.phone}
+                                            onChange={(e) => {
+                                              const newDepts = [...(formData.contactDepartments || [])];
+                                              newDepts[index].phone = e.target.value;
+                                              setFormData({...formData, contactDepartments: newDepts});
+                                            }}
+                                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                            placeholder="+৮৮০ ১৭১১ ২৩৪৫৬৭"
+                                          />
+                                        </div>
+                                        <div>
+                                          <label className="block text-xs text-gray-600 mb-1">ইমেইল</label>
+                                          <input
+                                            type="email"
+                                            value={dept.email}
+                                            onChange={(e) => {
+                                              const newDepts = [...(formData.contactDepartments || [])];
+                                              newDepts[index].email = e.target.value;
+                                              setFormData({...formData, contactDepartments: newDepts});
+                                            }}
+                                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                            placeholder="admission@iqraschool.edu"
+                                          />
+                                        </div>
+                                        <div>
+                                          <label className="block text-xs text-gray-600 mb-1">বিবরণ</label>
+                                          <input
+                                            type="text"
+                                            value={dept.description}
+                                            onChange={(e) => {
+                                              const newDepts = [...(formData.contactDepartments || [])];
+                                              newDepts[index].description = e.target.value;
+                                              setFormData({...formData, contactDepartments: newDepts});
+                                            }}
+                                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                            placeholder="নতুন শিক্ষার্থী ভর্তি সংক্রান্ত..."
+                                          />
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                  {(!formData.contactDepartments || formData.contactDepartments.length === 0) && (
+                                    <p className="text-sm text-gray-500 text-center py-4">কোনো বিভাগ যোগ করা হয়নি</p>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Map Section */}
+                              <div className="bg-white rounded-lg p-5 border border-gray-200">
+                                <h4 className="font-semibold text-gray-900 mb-4">মানচিত্র</h4>
+                                <div className="space-y-4">
+                                  <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                      মানচিত্র এমবেড কোড (HTML iframe)
+                                    </label>
+                                    <textarea
+                                      value={formData.contactMapEmbedCode}
+                                      onChange={(e) => setFormData({...formData, contactMapEmbedCode: e.target.value})}
+                                      rows={4}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-xs"
+                                      placeholder="<iframe src=&quot;...&quot;></iframe>"
+                                    />
+                                    <p className="text-xs text-gray-500 mt-1">Google Maps বা অন্য কোনো মানচিত্রের iframe কোড এখানে দিন</p>
+                                  </div>
+                                  <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                      ঠিকানা (মানচিত্রের নিচে প্রদর্শিত হবে)
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={formData.contactMapAddress}
+                                      onChange={(e) => setFormData({...formData, contactMapAddress: e.target.value})}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="রামপুরা, ঢাকা-১২১৯"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Social Media */}
+                              <div className="bg-white rounded-lg p-5 border border-gray-200">
+                                <h4 className="font-semibold text-gray-900 mb-4">সামাজিক যোগাযোগ</h4>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                  <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center space-x-2">
+                                      <span>Facebook URL</span>
+                                    </label>
+                                    <input
+                                      type="url"
+                                      value={formData.contactSocialMediaFacebook}
+                                      onChange={(e) => setFormData({...formData, contactSocialMediaFacebook: e.target.value})}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="https://facebook.com/yourpage"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">Twitter URL</label>
+                                    <input
+                                      type="url"
+                                      value={formData.contactSocialMediaTwitter}
+                                      onChange={(e) => setFormData({...formData, contactSocialMediaTwitter: e.target.value})}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="https://twitter.com/yourhandle"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">Instagram URL</label>
+                                    <input
+                                      type="url"
+                                      value={formData.contactSocialMediaInstagram}
+                                      onChange={(e) => setFormData({...formData, contactSocialMediaInstagram: e.target.value})}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="https://instagram.com/yourhandle"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">YouTube URL</label>
+                                    <input
+                                      type="url"
+                                      value={formData.contactSocialMediaYoutube}
+                                      onChange={(e) => setFormData({...formData, contactSocialMediaYoutube: e.target.value})}
+                                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="https://youtube.com/channel/yourchannel"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Form Subjects */}
+                              <div className="bg-white rounded-lg p-5 border border-gray-200">
+                                <h4 className="font-semibold text-gray-900 mb-4">ফরম বিষয়সমূহ</h4>
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    বিষয়সমূহ (প্রতিটি নতুন লাইনে একটি)
+                                  </label>
+                                  <textarea
+                                    value={Array.isArray(formData.contactFormSubjects) ? formData.contactFormSubjects.join('\n') : ''}
+                                    onChange={(e) => setFormData({...formData, contactFormSubjects: e.target.value.split('\n').filter(s => s.trim())})}
+                                    rows={6}
+                                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    placeholder="ভর্তি সংক্রান্ত&#10;শিক্ষা সংক্রান্ত&#10;ফি সংক্রান্ত&#10;সাধারণ তথ্য&#10;অভিযোগ&#10;পরামর্শ"
+                                  />
+                                  <p className="text-xs text-gray-500 mt-1">এই বিষয়সমূহ যোগাযোগ ফরমের ড্রপডাউন অপশনে দেখাবে</p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Info Box */}
+                      <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                        <div className="flex items-start space-x-2">
+                          <Info className="w-5 h-5 text-blue-600 mt-0.5" />
+                          <div className="text-sm text-blue-800">
+                            <p className="font-medium mb-1">কিভাবে কাজ করে?</p>
+                            <ul className="list-disc list-inside space-y-1 text-blue-700">
+                              <li>পেজ সক্রিয় থাকলে, ব্যবহারকারীরা নেভিগেশন মেনু থেকে এবং সরাসরি URL-এ প্রবেশ করতে পারবে</li>
+                              <li>পেজ নিষ্ক্রিয় থাকলে, ব্যবহারকারীরা সেই পেজ অ্যাক্সেস করতে পারবে না</li>
+                              <li>সেটিংস পরিবর্তন করার পর "সংরক্ষণ করুন" বাটনে ক্লিক করুন</li>
+                            </ul>
                           </div>
                         </div>
                       </div>
@@ -2229,6 +3361,9 @@ function SettingsPage() {
                       </div>
 
                       <div className="space-y-6">
+                        {/* Push Notification Setup */}
+                        <PushNotificationSetup />
+
                         {/* Email Settings */}
                         <div className="p-4 bg-blue-50 rounded-lg">
                           <h4 className="font-medium text-blue-900 mb-3">ইমেইল কনফিগারেশন</h4>
@@ -2239,7 +3374,8 @@ function SettingsPage() {
                               </label>
                               <input
                                 type="text"
-                                defaultValue="smtp.gmail.com"
+                                value={formData.smtpServer}
+                                onChange={(e) => setFormData({...formData, smtpServer: e.target.value})}
                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                               />
                             </div>
@@ -2249,7 +3385,8 @@ function SettingsPage() {
                               </label>
                               <input
                                 type="number"
-                                defaultValue="587"
+                                value={formData.smtpPort}
+                                onChange={(e) => setFormData({...formData, smtpPort: parseInt(e.target.value) || 587})}
                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                               />
                             </div>
@@ -2259,7 +3396,8 @@ function SettingsPage() {
                               </label>
                               <input
                                 type="email"
-                                defaultValue="noreply@iqraschool.edu.bd"
+                                value={formData.smtpEmail}
+                                onChange={(e) => setFormData({...formData, smtpEmail: e.target.value})}
                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                               />
                             </div>
@@ -2270,12 +3408,15 @@ function SettingsPage() {
                               <div className="relative">
                                 <input
                                   type={showPassword ? 'text' : 'password'}
-                                  defaultValue="••••••••"
+                                  value={formData.smtpPassword}
+                                  onChange={(e) => setFormData({...formData, smtpPassword: e.target.value})}
+                                  placeholder="পাসওয়ার্ড লিখুন"
                                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 />
                                 <button
+                                  type="button"
                                   onClick={() => setShowPassword(!showPassword)}
-                                  className="absolute right-3 top-1/2 transform -translate-y-1/2"
+                                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700"
                                 >
                                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                 </button>
@@ -2285,33 +3426,632 @@ function SettingsPage() {
                         </div>
 
                         {/* Notification Types */}
-                        <div className="p-4 bg-green-50 rounded-lg">
-                          <h4 className="font-medium text-green-900 mb-3">নোটিফিকেশন টাইপস</h4>
-                          <div className="space-y-3">
-                            {[
-                              { type: 'student_registration', label: 'নতুন শিক্ষার্থী নিবন্ধন', email: true, push: false },
-                              { type: 'payment_reminder', label: 'পেমেন্ট অনুস্মারক', email: true, push: true },
-                              { type: 'attendance_report', label: 'উপস্থিতি রিপোর্ট', email: false, push: true },
-                              { type: 'system_alert', label: 'সিস্টেম অ্যালার্ট', email: true, push: true },
-                              { type: 'exam_schedule', label: 'পরীক্ষার সময়সূচী', email: true, push: false }
-                            ].map((notification) => (
-                              <div key={notification.type} className="flex items-center justify-between p-3 bg-white rounded-lg">
-                                <div>
-                                  <p className="font-medium text-gray-900">{notification.label}</p>
-                                  <p className="text-sm text-gray-600">ব্যবহারকারীদের জন্য নোটিফিকেশন পাঠান</p>
-                                </div>
-                                <div className="flex space-x-4">
-                                  <div className="flex items-center space-x-2">
-                                    <input type="checkbox" defaultChecked={notification.email} className="h-4 w-4 text-blue-600" />
-                                    <Mail className="w-4 h-4 text-blue-600" />
-                                  </div>
-                                  <div className="flex items-center space-x-2">
-                                    <input type="checkbox" defaultChecked={notification.push} className="h-4 w-4 text-green-600" />
-                                    <Smartphone className="w-4 h-4 text-green-600" />
-                                  </div>
-                                </div>
+                        <div className="p-6 bg-white rounded-lg border border-gray-200">
+                          <h4 className="font-semibold text-gray-900 mb-4 text-lg">নোটিফিকেশন টাইপস</h4>
+                          <p className="text-sm text-gray-600 mb-6">প্রতিটি নোটিফিকেশন টাইপের জন্য ইমেইল এবং পুশ নোটিফিকেশন অন/অফ করতে পারেন। অন করা থাকলে নোটিফিকেশন পাঠানো হবে।</p>
+                          
+                          <div className="space-y-4">
+                            {/* Student Registration */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">নতুন শিক্ষার্থী নিবন্ধন</p>
+                                <p className="text-sm text-gray-600">নতুন শিক্ষার্থী নিবন্ধন হলে নোটিফিকেশন পাঠানো হবে</p>
                               </div>
-                            ))}
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.studentRegistrationEmail}
+                                    onChange={(e) => setFormData({...formData, studentRegistrationEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.studentRegistrationPush}
+                                    onChange={(e) => setFormData({...formData, studentRegistrationPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.studentRegistrationSMS}
+                                    onChange={(e) => setFormData({...formData, studentRegistrationSMS: e.target.checked})}
+                                    className="w-5 h-5 text-orange-600 rounded focus:ring-2 focus:ring-orange-500"
+                                  />
+                                  <Phone className="w-5 h-5 text-orange-600" />
+                                  <span className="text-sm font-medium text-gray-700">এসএমএস</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Payment Reminder */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">পেমেন্ট অনুস্মারক</p>
+                                <p className="text-sm text-gray-600">ফি পেমেন্টের অনুস্মারক নোটিফিকেশন</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.paymentReminderEmail}
+                                    onChange={(e) => setFormData({...formData, paymentReminderEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.paymentReminderPush}
+                                    onChange={(e) => setFormData({...formData, paymentReminderPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.paymentReminderSMS}
+                                    onChange={(e) => setFormData({...formData, paymentReminderSMS: e.target.checked})}
+                                    className="w-5 h-5 text-orange-600 rounded focus:ring-2 focus:ring-orange-500"
+                                  />
+                                  <Phone className="w-5 h-5 text-orange-600" />
+                                  <span className="text-sm font-medium text-gray-700">এসএমএস</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Attendance Report */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">উপস্থিতি রিপোর্ট</p>
+                                <p className="text-sm text-gray-600">দৈনিক বা সাপ্তাহিক উপস্থিতি রিপোর্ট</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.attendanceReportEmail}
+                                    onChange={(e) => setFormData({...formData, attendanceReportEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.attendanceReportPush}
+                                    onChange={(e) => setFormData({...formData, attendanceReportPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.attendanceReportSMS}
+                                    onChange={(e) => setFormData({...formData, attendanceReportSMS: e.target.checked})}
+                                    className="w-5 h-5 text-orange-600 rounded focus:ring-2 focus:ring-orange-500"
+                                  />
+                                  <Phone className="w-5 h-5 text-orange-600" />
+                                  <span className="text-sm font-medium text-gray-700">এসএমএস</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* System Alert */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">সিস্টেম অ্যালার্ট</p>
+                                <p className="text-sm text-gray-600">সিস্টেমের গুরুত্বপূর্ণ অ্যালার্ট এবং ঘোষণা</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.systemAlertEmail}
+                                    onChange={(e) => setFormData({...formData, systemAlertEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.systemAlertPush}
+                                    onChange={(e) => setFormData({...formData, systemAlertPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Exam Schedule */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">পরীক্ষার সময়সূচী</p>
+                                <p className="text-sm text-gray-600">পরীক্ষার সময়সূচী এবং তারিখের নোটিফিকেশন</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.examScheduleEmail}
+                                    onChange={(e) => setFormData({...formData, examScheduleEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.examSchedulePush}
+                                    onChange={(e) => setFormData({...formData, examSchedulePush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.examScheduleSMS}
+                                    onChange={(e) => setFormData({...formData, examScheduleSMS: e.target.checked})}
+                                    className="w-5 h-5 text-orange-600 rounded focus:ring-2 focus:ring-orange-500"
+                                  />
+                                  <Phone className="w-5 h-5 text-orange-600" />
+                                  <span className="text-sm font-medium text-gray-700">এসএমএস</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Exam Results */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">পরীক্ষার ফলাফল</p>
+                                <p className="text-sm text-gray-600">পরীক্ষার ফলাফল প্রকাশ হলে নোটিফিকেশন</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.examResultsEmail}
+                                    onChange={(e) => setFormData({...formData, examResultsEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.examResultsPush}
+                                    onChange={(e) => setFormData({...formData, examResultsPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.examResultsSMS}
+                                    onChange={(e) => setFormData({...formData, examResultsSMS: e.target.checked})}
+                                    className="w-5 h-5 text-orange-600 rounded focus:ring-2 focus:ring-orange-500"
+                                  />
+                                  <Phone className="w-5 h-5 text-orange-600" />
+                                  <span className="text-sm font-medium text-gray-700">এসএমএস</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Homework Assignment */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">বাড়ির কাজ নির্ধারণ</p>
+                                <p className="text-sm text-gray-600">নতুন বাড়ির কাজ নির্ধারণ হলে নোটিফিকেশন</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.homeworkAssignmentEmail}
+                                    onChange={(e) => setFormData({...formData, homeworkAssignmentEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.homeworkAssignmentPush}
+                                    onChange={(e) => setFormData({...formData, homeworkAssignmentPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Homework Reminder */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">বাড়ির কাজ অনুস্মারক</p>
+                                <p className="text-sm text-gray-600">বাড়ির কাজ জমা দেওয়ার অনুস্মারক</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.homeworkReminderEmail}
+                                    onChange={(e) => setFormData({...formData, homeworkReminderEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.homeworkReminderPush}
+                                    onChange={(e) => setFormData({...formData, homeworkReminderPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Class Announcement */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">ক্লাস ঘোষণা</p>
+                                <p className="text-sm text-gray-600">ক্লাসের গুরুত্বপূর্ণ ঘোষণা এবং বিজ্ঞপ্তি</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.classAnnouncementEmail}
+                                    onChange={(e) => setFormData({...formData, classAnnouncementEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.classAnnouncementPush}
+                                    onChange={(e) => setFormData({...formData, classAnnouncementPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Notice Notification */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">নোটিশ</p>
+                                <p className="text-sm text-gray-600">নতুন নোটিশ প্রকাশ হলে নোটিফিকেশন</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.noticeNotificationEmail}
+                                    onChange={(e) => setFormData({...formData, noticeNotificationEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.noticeNotificationPush}
+                                    onChange={(e) => setFormData({...formData, noticeNotificationPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Event Reminder */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">ইভেন্ট অনুস্মারক</p>
+                                <p className="text-sm text-gray-600">আসন্ন ইভেন্ট এবং অনুষ্ঠানের অনুস্মারক</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.eventReminderEmail}
+                                    onChange={(e) => setFormData({...formData, eventReminderEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.eventReminderPush}
+                                    onChange={(e) => setFormData({...formData, eventReminderPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Message Notification */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">বার্তা</p>
+                                <p className="text-sm text-gray-600">নতুন বার্তা পাওয়ার নোটিফিকেশন</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.messageNotificationEmail}
+                                    onChange={(e) => setFormData({...formData, messageNotificationEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.messageNotificationPush}
+                                    onChange={(e) => setFormData({...formData, messageNotificationPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.messageNotificationSMS}
+                                    onChange={(e) => setFormData({...formData, messageNotificationSMS: e.target.checked})}
+                                    className="w-5 h-5 text-orange-600 rounded focus:ring-2 focus:ring-orange-500"
+                                  />
+                                  <Phone className="w-5 h-5 text-orange-600" />
+                                  <span className="text-sm font-medium text-gray-700">এসএমএস</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Complaint Response */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">অভিযোগের উত্তর</p>
+                                <p className="text-sm text-gray-600">অভিযোগের উত্তর পাওয়ার নোটিফিকেশন</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.complaintResponseEmail}
+                                    onChange={(e) => setFormData({...formData, complaintResponseEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.complaintResponsePush}
+                                    onChange={(e) => setFormData({...formData, complaintResponsePush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Fee Payment Confirmation */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">ফি পেমেন্ট নিশ্চিতকরণ</p>
+                                <p className="text-sm text-gray-600">ফি পেমেন্ট সফল হলে নিশ্চিতকরণ নোটিফিকেশন</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.feePaymentConfirmationEmail}
+                                    onChange={(e) => setFormData({...formData, feePaymentConfirmationEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.feePaymentConfirmationPush}
+                                    onChange={(e) => setFormData({...formData, feePaymentConfirmationPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.feePaymentConfirmationSMS}
+                                    onChange={(e) => setFormData({...formData, feePaymentConfirmationSMS: e.target.checked})}
+                                    className="w-5 h-5 text-orange-600 rounded focus:ring-2 focus:ring-orange-500"
+                                  />
+                                  <Phone className="w-5 h-5 text-orange-600" />
+                                  <span className="text-sm font-medium text-gray-700">এসএমএস</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Admission Confirmation */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">ভর্তি নিশ্চিতকরণ</p>
+                                <p className="text-sm text-gray-600">ভর্তি সফল হলে নিশ্চিতকরণ নোটিফিকেশন</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.admissionConfirmationEmail}
+                                    onChange={(e) => setFormData({...formData, admissionConfirmationEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.admissionConfirmationPush}
+                                    onChange={(e) => setFormData({...formData, admissionConfirmationPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.admissionConfirmationSMS}
+                                    onChange={(e) => setFormData({...formData, admissionConfirmationSMS: e.target.checked})}
+                                    className="w-5 h-5 text-orange-600 rounded focus:ring-2 focus:ring-orange-500"
+                                  />
+                                  <Phone className="w-5 h-5 text-orange-600" />
+                                  <span className="text-sm font-medium text-gray-700">এসএমএস</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Teacher Assignment */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">শিক্ষক নির্ধারণ</p>
+                                <p className="text-sm text-gray-600">নতুন শিক্ষক বা বিষয় নির্ধারণ হলে নোটিফিকেশন</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.teacherAssignmentEmail}
+                                    onChange={(e) => setFormData({...formData, teacherAssignmentEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.teacherAssignmentPush}
+                                    onChange={(e) => setFormData({...formData, teacherAssignmentPush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.teacherAssignmentSMS}
+                                    onChange={(e) => setFormData({...formData, teacherAssignmentSMS: e.target.checked})}
+                                    className="w-5 h-5 text-orange-600 rounded focus:ring-2 focus:ring-orange-500"
+                                  />
+                                  <Phone className="w-5 h-5 text-orange-600" />
+                                  <span className="text-sm font-medium text-gray-700">এসএমএস</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Class Schedule */}
+                            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 mb-1">ক্লাস সময়সূচী</p>
+                                <p className="text-sm text-gray-600">ক্লাস সময়সূচী পরিবর্তন হলে নোটিফিকেশন</p>
+                              </div>
+                              <div className="flex items-center space-x-6 ml-4">
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.classScheduleEmail}
+                                    onChange={(e) => setFormData({...formData, classScheduleEmail: e.target.checked})}
+                                    className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <Mail className="w-5 h-5 text-blue-600" />
+                                  <span className="text-sm font-medium text-gray-700">ইমেইল</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.classSchedulePush}
+                                    onChange={(e) => setFormData({...formData, classSchedulePush: e.target.checked})}
+                                    className="w-5 h-5 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <Smartphone className="w-5 h-5 text-green-600" />
+                                  <span className="text-sm font-medium text-gray-700">পুশ</span>
+                                </label>
+                                <label className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.classScheduleSMS}
+                                    onChange={(e) => setFormData({...formData, classScheduleSMS: e.target.checked})}
+                                    className="w-5 h-5 text-orange-600 rounded focus:ring-2 focus:ring-orange-500"
+                                  />
+                                  <Phone className="w-5 h-5 text-orange-600" />
+                                  <span className="text-sm font-medium text-gray-700">এসএমএস</span>
+                                </label>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Save Button */}
+                          <div className="mt-6 flex justify-end">
+                            <button
+                              onClick={handleSaveSettings}
+                              disabled={saving}
+                              className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            >
+                              <Save className="w-5 h-5" />
+                              <span>{saving ? 'সংরক্ষণ হচ্ছে...' : 'সমস্ত পরিবর্তন সংরক্ষণ করুন'}</span>
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -2325,7 +4065,10 @@ function SettingsPage() {
                           <h3 className="text-xl font-semibold text-gray-900">তৃতীয় পক্ষের ইন্টিগ্রেশন</h3>
                           <p className="text-sm text-gray-600 mt-1">বাহ্যিক সার্ভিস এবং API কনফিগারেশন</p>
                         </div>
-                        <button className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2">
+                        <button 
+                          onClick={() => setShowIntegrationModal(true)}
+                          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2 transition-colors"
+                        >
                           <Plus className="w-4 h-4" />
                           <span>নতুন ইন্টিগ্রেশন</span>
                         </button>
@@ -2333,58 +4076,51 @@ function SettingsPage() {
 
                       <div className="space-y-4">
                         {/* Integration Cards */}
-                        {[
-                          {
-                            name: 'Google Classroom',
-                            status: 'সংযুক্ত',
-                            icon: '📚',
-                            description: 'ক্লাসরুম এবং অ্যাসাইনমেন্ট সিঙ্ক্রোনাইজেশন'
-                          },
-                          {
-                            name: 'SMS Gateway',
-                            status: 'সংযুক্ত',
-                            icon: '📱',
-                            description: 'এসএমএস নোটিফিকেশন এবং অ্যালার্ট'
-                          },
-                          {
-                            name: 'Payment Gateway',
-                            status: 'সংযুক্ত নেই',
-                            icon: '💳',
-                            description: 'অনলাইন পেমেন্ট প্রসেসিং'
-                          },
-                          {
-                            name: 'Cloud Storage',
-                            status: 'সংযুক্ত',
-                            icon: '☁️',
-                            description: 'ফাইল স্টোরেজ এবং ব্যাকআপ'
-                          }
-                        ].map((integration, index) => (
-                          <div key={index} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                            <div className="flex items-center space-x-4">
-                              <div className="text-2xl">{integration.icon}</div>
-                              <div>
-                                <h4 className="font-medium text-gray-900">{integration.name}</h4>
-                                <p className="text-sm text-gray-600">{integration.description}</p>
+                        {integrations.map((integration) => {
+                          const IconComponent = integration.icon;
+                          return (
+                            <div 
+                              key={integration.id} 
+                              className="flex items-center justify-between p-5 bg-white border border-gray-200 rounded-lg hover:shadow-md transition-shadow"
+                            >
+                              <div className="flex items-center space-x-4">
+                                <div className="w-12 h-12 bg-blue-50 rounded-lg flex items-center justify-center">
+                                  <IconComponent className="w-6 h-6 text-blue-600" />
+                                </div>
+                                <div>
+                                  <h4 className="font-semibold text-gray-900">{integration.name}</h4>
+                                  <p className="text-sm text-gray-600 mt-0.5">{integration.description}</p>
+                                </div>
+                              </div>
+                              <div className="flex items-center space-x-3">
+                                <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                  integration.status === 'connected'
+                                    ? 'bg-green-100 text-green-800'
+                                    : 'bg-red-100 text-red-800'
+                                }`}>
+                                  {integration.status === 'connected' ? 'সংযুক্ত' : 'সংযুক্ত নেই'}
+                                </span>
+                                <button 
+                                  onClick={() => {
+                                    setEditingIntegration(integration.id);
+                                    setShowIntegrationModal(true);
+                                  }}
+                                  className="p-2 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors"
+                                  title="সম্পাদনা করুন"
+                                >
+                                  <Edit3 className="w-4 h-4" />
+                                </button>
                               </div>
                             </div>
-                            <div className="flex items-center space-x-3">
-                              <span className={`px-2 py-1 rounded text-xs ${
-                                integration.status === 'সংযুক্ত'
-                                  ? 'bg-green-100 text-green-800'
-                                  : 'bg-red-100 text-red-800'
-                              }`}>
-                                {integration.status}
-                              </span>
-                              <button className="text-blue-600 hover:text-blue-800">
-                                <Edit3 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
 
                         {/* API Settings */}
-                        <div className="mt-8 p-4 bg-purple-50 rounded-lg">
-                          <h4 className="font-medium text-purple-900 mb-3">API কনফিগারেশন</h4>
+                        <div className="mt-8 p-6 bg-white border border-gray-200 rounded-lg">
+                          <h4 className="font-semibold text-gray-900 mb-4 flex items-center">
+                            <Key className="w-5 h-5 mr-2 text-purple-600" />
+                            API কনফিগারেশন
+                          </h4>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -2392,10 +4128,11 @@ function SettingsPage() {
                               </label>
                               <input
                                 type="number"
-                                defaultValue="100"
+                                value={formData.apiRateLimit}
+                                onChange={(e) => setFormData({ ...formData, apiRateLimit: parseInt(e.target.value) || 100 })}
                                 min="10"
                                 max="1000"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                               />
                             </div>
                             <div>
@@ -2404,228 +4141,14 @@ function SettingsPage() {
                               </label>
                               <input
                                 type="number"
-                                defaultValue="30"
+                                value={formData.apiTimeout}
+                                onChange={(e) => setFormData({ ...formData, apiTimeout: parseInt(e.target.value) || 30 })}
                                 min="5"
                                 max="300"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                               />
                             </div>
                           </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {activeTab === 'audit' && (
-                    <div>
-                      <div className="flex items-center justify-between mb-6">
-                        <div>
-                          <h3 className="text-xl font-semibold text-gray-900">অডিট লগস</h3>
-                          <p className="text-sm text-gray-600 mt-1">সিস্টেম অ্যাক্টিভিটি এবং ইভেন্ট লগস</p>
-                        </div>
-                        <div className="flex space-x-2">
-                          <button className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2">
-                            <Download className="w-4 h-4" />
-                            <span>এক্সপোর্ট লগস</span>
-                          </button>
-                          <button className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 flex items-center space-x-2">
-                            <Trash2 className="w-4 h-4" />
-                            <span>পুরানো লগস মুছুন</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="space-y-4">
-                        {/* Log Filters */}
-                        <div className="p-4 bg-gray-50 rounded-lg">
-                          <h4 className="font-medium text-gray-900 mb-3">লগ ফিল্টার</h4>
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                লগ লেভেল
-                              </label>
-                              <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                                <option value="all">সবগুলো</option>
-                                <option value="info">INFO</option>
-                                <option value="warn">WARNING</option>
-                                <option value="error">ERROR</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                তারিখ থেকে
-                              </label>
-                              <input
-                                type="date"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">
-                                তারিখ পর্যন্ত
-                              </label>
-                              <input
-                                type="date"
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Log Entries */}
-                        <div className="bg-gray-50 rounded-lg p-4">
-                          <h4 className="font-medium text-gray-900 mb-3">সাম্প্রতিক লগ এন্ট্রি</h4>
-                          <div className="space-y-2 max-h-96 overflow-y-auto">
-                            {[
-                              {
-                                time: '2025-01-26 14:32:15',
-                                level: 'INFO',
-                                user: 'admin@iqra.edu.bd',
-                                action: 'User login successful',
-                                ip: '192.168.1.100'
-                              },
-                              {
-                                time: '2025-01-26 14:30:22',
-                                level: 'WARN',
-                                user: 'system',
-                                action: 'High memory usage detected (85%)',
-                                ip: 'localhost'
-                              },
-                              {
-                                time: '2025-01-26 14:28:45',
-                                level: 'ERROR',
-                                user: 'api',
-                                action: 'Database connection timeout',
-                                ip: '192.168.1.101'
-                              },
-                              {
-                                time: '2025-01-26 14:25:10',
-                                level: 'INFO',
-                                user: 'backup',
-                                action: 'Automated backup completed successfully',
-                                ip: 'localhost'
-                              },
-                              {
-                                time: '2025-01-26 14:20:33',
-                                level: 'INFO',
-                                user: 'teacher@iqra.edu.bd',
-                                action: 'Student attendance marked',
-                                ip: '192.168.1.102'
-                              }
-                            ].map((log, index) => (
-                              <div key={index} className="flex items-center space-x-4 p-3 bg-white rounded-lg text-sm">
-                                <span className="text-gray-500 w-40">{log.time}</span>
-                                <span className={`px-2 py-1 rounded text-xs w-16 text-center ${
-                                  log.level === 'ERROR' ? 'bg-red-100 text-red-800' :
-                                  log.level === 'WARN' ? 'bg-yellow-100 text-yellow-800' :
-                                  'bg-green-100 text-green-800'
-                                }`}>
-                                  {log.level}
-                                </span>
-                                <span className="text-gray-700 w-48">{log.user}</span>
-                                <span className="flex-1 text-gray-900">{log.action}</span>
-                                <span className="text-gray-500 w-32">{log.ip}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {activeTab === 'advanced' && (
-                    <div>
-                      <div className="flex items-center justify-between mb-6">
-                        <div>
-                          <h3 className="text-xl font-semibold text-gray-900">অ্যাডভান্সড সেটিংস</h3>
-                          <p className="text-sm text-gray-600 mt-1">উন্নত সিস্টেম কনফিগারেশন</p>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <Zap className="w-5 h-5 text-yellow-600" />
-                          <span className="text-sm text-yellow-600">অ্যাডভান্সড মোড</span>
-                        </div>
-                      </div>
-
-                      <div className="space-y-6">
-                        {/* Development Settings */}
-                        <div className="p-4 bg-yellow-50 rounded-lg">
-                          <h4 className="font-medium text-yellow-900 mb-3">ডেভেলপমেন্ট সেটিংস</h4>
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="font-medium text-gray-900">ডিবাগ মোড</p>
-                                <p className="text-sm text-gray-600">বিস্তারিত লগিং এবং এরর রিপোর্টিং</p>
-                              </div>
-                              <input type="checkbox" className="h-4 w-4 text-yellow-600" />
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="font-medium text-gray-900">API ডকুমেন্টেশন</p>
-                                <p className="text-sm text-gray-600">স্বয়ংক্রিয় API ডকুমেন্টেশন জেনারেশন</p>
-                              </div>
-                              <input type="checkbox" defaultChecked className="h-4 w-4 text-yellow-600" />
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Security Headers */}
-                        <div className="p-4 bg-red-50 rounded-lg">
-                          <h4 className="font-medium text-red-900 mb-3">সিকিউরিটি হেডারস</h4>
-                          <div className="space-y-3">
-                            {[
-                              { name: 'Content Security Policy', enabled: true },
-                              { name: 'X-Frame-Options', enabled: true },
-                              { name: 'X-Content-Type-Options', enabled: true },
-                              { name: 'Strict-Transport-Security', enabled: false },
-                              { name: 'Referrer-Policy', enabled: true }
-                            ].map((header, index) => (
-                              <div key={index} className="flex items-center justify-between">
-                                <span className="text-sm text-gray-700">{header.name}</span>
-                                <input
-                                  type="checkbox"
-                                  defaultChecked={header.enabled}
-                                  className="h-4 w-4 text-red-600"
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        {/* Custom Configuration */}
-                        <div className="p-4 bg-gray-50 rounded-lg">
-                          <h4 className="font-medium text-gray-900 mb-3">কাস্টম কনফিগারেশন</h4>
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-2">
-                              কাস্টম CSS
-                            </label>
-                            <textarea
-                              rows={4}
-                              placeholder="/* কাস্টম CSS লিখুন */"
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                            />
-                          </div>
-                          <div className="mt-4">
-                            <label className="block text-sm font-medium text-gray-700 mb-2">
-                              কাস্টম JavaScript
-                            </label>
-                            <textarea
-                              rows={4}
-                              placeholder="// কাস্টম JavaScript লিখুন"
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                            />
-                          </div>
-                        </div>
-
-                        {/* System Reset */}
-                        <div className="p-4 bg-red-50 rounded-lg border border-red-200">
-                          <h4 className="font-medium text-red-900 mb-3">সিস্টেম রিসেট</h4>
-                          <p className="text-sm text-red-700 mb-4">
-                            ⚠️ এই অপশনটি সমস্ত সেটিংস এবং ডেটা রিসেট করবে। এটি শুধুমাত্র জরুরী পরিস্থিতিতে ব্যবহার করুন।
-                          </p>
-                          <button className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 flex items-center space-x-2">
-                            <AlertTriangle className="w-4 h-4" />
-                            <span>ফ্যাক্টরি রিসেট</span>
-                          </button>
                         </div>
                       </div>
                     </div>
@@ -2702,6 +4225,1039 @@ function SettingsPage() {
                   >
                     <Plus className="w-4 h-4" />
                     <span>যোগ করুন</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Integration Modal */}
+      {showIntegrationModal && (
+        <div className="fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black bg-opacity-30"
+            style={{
+              backdropFilter: 'blur(4px)',
+              WebkitBackdropFilter: 'blur(4px)',
+              background: 'rgba(0, 0, 0, 0.3)'
+            }}
+            onClick={() => {
+              setShowIntegrationModal(false);
+              setEditingIntegration(null);
+            }}
+          />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div 
+              className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between p-6 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900">
+                    {editingIntegration ? 'ইন্টিগ্রেশন সম্পাদনা করুন' : 'নতুন ইন্টিগ্রেশন যোগ করুন'}
+                  </h2>
+                  <p className="text-sm text-gray-600 mt-1">
+                    {editingIntegration 
+                      ? integrations.find(i => i.id === editingIntegration)?.name 
+                      : 'একটি নতুন তৃতীয় পক্ষের সার্ভিস কনফিগার করুন'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowIntegrationModal(false);
+                    setEditingIntegration(null);
+                  }}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="p-6">
+                {editingIntegration ? (
+                  (() => {
+                    const integration = integrations.find(i => i.id === editingIntegration);
+                    if (!integration) return null;
+                    
+                    return (
+                      <div className="space-y-6">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            ইন্টিগ্রেশন নাম
+                          </label>
+                          <input
+                            type="text"
+                            value={integration.name}
+                            disabled
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500"
+                          />
+                        </div>
+
+                        {integration.id === 'google-classroom' && (
+                          <>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                API Key
+                              </label>
+                              <input
+                                type="password"
+                                value={integration.config.apiKey}
+                                onChange={(e) => {
+                                  const updated = integrations.map(i => 
+                                    i.id === editingIntegration 
+                                      ? { ...i, config: { ...i.config, apiKey: e.target.value } }
+                                      : i
+                                  );
+                                  setIntegrations(updated);
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Google Classroom API Key"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Client ID
+                              </label>
+                              <input
+                                type="text"
+                                value={integration.config.clientId}
+                                onChange={(e) => {
+                                  const updated = integrations.map(i => 
+                                    i.id === editingIntegration 
+                                      ? { ...i, config: { ...i.config, clientId: e.target.value } }
+                                      : i
+                                  );
+                                  setIntegrations(updated);
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Google OAuth Client ID"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Client Secret
+                              </label>
+                              <input
+                                type="password"
+                                value={integration.config.clientSecret}
+                                onChange={(e) => {
+                                  const updated = integrations.map(i => 
+                                    i.id === editingIntegration 
+                                      ? { ...i, config: { ...i.config, clientSecret: e.target.value } }
+                                      : i
+                                  );
+                                  setIntegrations(updated);
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Google OAuth Client Secret"
+                              />
+                            </div>
+                          </>
+                        )}
+
+                        {integration.id === 'sms-gateway' && (
+                          <>
+                            {/* Tabs */}
+                            <div className="flex space-x-1 border-b border-gray-200 mb-6">
+                              <button
+                                type="button"
+                                onClick={() => setSmsGatewayTab('config')}
+                                className={`px-4 py-2 font-medium text-sm transition-colors ${
+                                  smsGatewayTab === 'config'
+                                    ? 'text-blue-600 border-b-2 border-blue-600'
+                                    : 'text-gray-500 hover:text-gray-700'
+                                }`}
+                              >
+                                কনফিগারেশন
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSmsGatewayTab('templates')}
+                                className={`px-4 py-2 font-medium text-sm transition-colors ${
+                                  smsGatewayTab === 'templates'
+                                    ? 'text-blue-600 border-b-2 border-blue-600'
+                                    : 'text-gray-500 hover:text-gray-700'
+                                }`}
+                              >
+                                টেম্পলেট
+                              </button>
+                            </div>
+
+                            {/* Configuration Tab */}
+                            {smsGatewayTab === 'config' && (
+                              <>
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    Provider
+                                  </label>
+                                  <select
+                                    value={integration.config.provider === 'custom' ? 'custom' : integration.config.provider}
+                                    onChange={(e) => {
+                                      const providerValue = e.target.value;
+                                      const updated = integrations.map(i => 
+                                        i.id === editingIntegration 
+                                          ? { 
+                                              ...i, 
+                                              config: { 
+                                                ...i.config, 
+                                                provider: providerValue,
+                                                customProvider: providerValue === 'custom' ? (i.config.customProvider || '') : undefined
+                                              } 
+                                            }
+                                          : i
+                                      );
+                                      setIntegrations(updated);
+                                    }}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  >
+                                    <option value="">Select Provider</option>
+                                    <option value="bulksmsbd">BulkSMS BD</option>
+                                    <option value="twilio">Twilio</option>
+                                    <option value="nexmo">Nexmo/Vonage</option>
+                                    <option value="textlocal">TextLocal</option>
+                                    <option value="msg91">MSG91</option>
+                                    <option value="custom">Custom Provider</option>
+                                  </select>
+                                </div>
+                                {integration.config.provider === 'custom' && (
+                                  <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                      Custom Provider Name
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={integration.config.customProvider || ''}
+                                      onChange={(e) => {
+                                        const updated = integrations.map(i => 
+                                          i.id === editingIntegration 
+                                            ? { ...i, config: { ...i.config, customProvider: e.target.value } }
+                                            : i
+                                        );
+                                        setIntegrations(updated);
+                                      }}
+                                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      placeholder="Enter custom provider name"
+                                    />
+                                  </div>
+                                )}
+                                {integration.config.provider === 'bulksmsbd' && (
+                                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg mb-4">
+                                    <p className="text-sm text-blue-800">
+                                      <strong>API Endpoint:</strong> http://bulksmsbd.net/api/smsapi
+                                    </p>
+                                    <p className="text-xs text-blue-600 mt-1">
+                                      <strong>Note:</strong> আপনার IP address whitelist করতে হবে BulkSMS BD dashboard থেকে
+                                    </p>
+                                  </div>
+                                )}
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    API Key
+                                  </label>
+                                  <input
+                                    type="password"
+                                    value={integration.config.apiKey}
+                                    onChange={(e) => {
+                                      const updated = integrations.map(i => 
+                                        i.id === editingIntegration 
+                                          ? { ...i, config: { ...i.config, apiKey: e.target.value } }
+                                          : i
+                                      );
+                                      setIntegrations(updated);
+                                    }}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    placeholder={integration.config.provider === 'bulksmsbd' ? 'BulkSMS BD API Key' : 'SMS Gateway API Key'}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    Sender ID
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={integration.config.senderId}
+                                    onChange={(e) => {
+                                      const updated = integrations.map(i => 
+                                        i.id === editingIntegration 
+                                          ? { ...i, config: { ...i.config, senderId: e.target.value } }
+                                          : i
+                                      );
+                                      setIntegrations(updated);
+                                    }}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    placeholder={integration.config.provider === 'bulksmsbd' ? '8809648904800 (with country code)' : 'Sender ID or Phone Number'}
+                                  />
+                                  {integration.config.provider === 'bulksmsbd' && (
+                                    <p className="text-xs text-gray-500 mt-1">
+                                      Sender ID must include country code (e.g., 8809648904800)
+                                    </p>
+                                  )}
+                                </div>
+                              </>
+                            )}
+
+                            {/* Templates Tab */}
+                            {smsGatewayTab === 'templates' && (
+                              <div className="space-y-4">
+                                <div className="flex justify-between items-center">
+                                  <h3 className="text-lg font-semibold text-gray-900">SMS টেম্পলেট</h3>
+                                  <div className="flex space-x-2">
+                                    <button
+                                      type="button"
+                                      onClick={initializeDefaultTemplates}
+                                      className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center space-x-2"
+                                      title="সব ডিফল্ট টেম্পলেট একবারে যোগ করুন"
+                                    >
+                                      <Plus className="w-4 h-4" />
+                                      <span>ডিফল্ট টেম্পলেট যোগ করুন</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingTemplate(null);
+                                        setShowTemplateModal(true);
+                                      }}
+                                      className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2"
+                                    >
+                                      <Plus className="w-4 h-4" />
+                                      <span>নতুন টেম্পলেট</span>
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {smsTemplates.length === 0 ? (
+                                  <div className="text-center py-12 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
+                                    <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                                    <p className="text-gray-600 mb-2">কোন টেম্পলেট নেই</p>
+                                    <p className="text-sm text-gray-500">একটি নতুন SMS টেম্পলেট তৈরি করুন</p>
+                                  </div>
+                                ) : (
+                                  <div className="space-y-3">
+                                    {smsTemplates.map((template) => (
+                                      <div
+                                        key={template.id}
+                                        className="p-4 bg-white border border-gray-200 rounded-lg hover:shadow-md transition-shadow"
+                                      >
+                                        <div className="flex justify-between items-start">
+                                          <div className="flex-1">
+                                            <div className="flex items-center space-x-2 mb-2">
+                                              <h4 className="font-semibold text-gray-900">{template.name}</h4>
+                                              <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">
+                                                {template.category}
+                                              </span>
+                                            </div>
+                                            <p className="text-sm text-gray-600 line-clamp-2">{template.message}</p>
+                                            {template.variables.length > 0 && (
+                                              <div className="mt-2 flex flex-wrap gap-1">
+                                                {template.variables.map((variable) => (
+                                                  <span
+                                                    key={variable}
+                                                    className="px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded"
+                                                  >
+                                                    {variable}
+                                                  </span>
+                                                ))}
+                                              </div>
+                                            )}
+                                          </div>
+                                          <div className="flex space-x-2 ml-4">
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                setEditingTemplate(template);
+                                                setShowTemplateModal(true);
+                                              }}
+                                              className="p-2 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors"
+                                              title="সম্পাদনা করুন"
+                                            >
+                                              <Edit3 className="w-4 h-4" />
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                if (confirm(`আপনি কি "${template.name}" টেম্পলেটটি মুছে ফেলতে চান?`)) {
+                                                  setSmsTemplates(smsTemplates.filter(t => t.id !== template.id));
+                                                }
+                                              }}
+                                              className="p-2 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors"
+                                              title="মুছে ফেলুন"
+                                            >
+                                              <Trash2 className="w-4 h-4" />
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Available Variables Info */}
+                                <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                                  <h4 className="text-sm font-semibold text-gray-700 mb-2">উপলব্ধ ভেরিয়েবল:</h4>
+                                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+                                    <code className="text-blue-600">{'{studentName}'}</code>
+                                    <code className="text-blue-600">{'{className}'}</code>
+                                    <code className="text-blue-600">{'{rollNumber}'}</code>
+                                    <code className="text-blue-600">{'{guardianName}'}</code>
+                                    <code className="text-blue-600">{'{guardianPhone}'}</code>
+                                    <code className="text-blue-600">{'{schoolName}'}</code>
+                                    <code className="text-blue-600">{'{date}'}</code>
+                                    <code className="text-blue-600">{'{time}'}</code>
+                                    <code className="text-blue-600">{'{amount}'}</code>
+                                    <code className="text-blue-600">{'{feeType}'}</code>
+                                    <code className="text-blue-600">{'{receiptNumber}'}</code>
+                                    <code className="text-blue-600">{'{teacherName}'}</code>
+                                    <code className="text-blue-600">{'{month}'}</code>
+                                    <code className="text-blue-600">{'{months}'}</code>
+                                    <code className="text-blue-600">{'{session}'}</code>
+                                    <code className="text-blue-600">{'{examDate}'}</code>
+                                    <code className="text-blue-600">{'{examName}'}</code>
+                                    <code className="text-blue-600">{'{resultDate}'}</code>
+                                    <code className="text-blue-600">{'{examFee}'}</code>
+                                    <code className="text-blue-600">{'{tuitionFee}'}</code>
+                                    <code className="text-blue-600">{'{admissionFee}'}</code>
+                                    <code className="text-blue-600">{'{sessionFee}'}</code>
+                                    <code className="text-blue-600">{'{teachingSalary}'}</code>
+                                  </div>
+                                  <p className="text-xs text-gray-500 mt-2">
+                                    <strong>Note:</strong> {'{month}'} একক মাসের জন্য, {'{months}'} একাধিক মাসের জন্য (যেমন: জানুয়ারি, ফেব্রুয়ারি, মার্চ, এপ্রিল, মে, জুন)
+                                  </p>
+                                  <p className="text-xs text-gray-500 mt-1">
+                                    টেম্পলেটে এই ভেরিয়েবলগুলো ব্যবহার করুন, এবং SMS পাঠানোর সময় এটি স্বয়ংক্রিয়ভাবে রিপ্লেস হবে
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {integration.id === 'payment-gateway' && (
+                          <>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Provider
+                              </label>
+                              <select
+                                value={integration.config.provider === 'custom' ? 'custom' : integration.config.provider}
+                                onChange={(e) => {
+                                  const providerValue = e.target.value;
+                                  const updated = integrations.map(i => 
+                                    i.id === editingIntegration 
+                                      ? { 
+                                          ...i, 
+                                          config: { 
+                                            ...i.config, 
+                                            provider: providerValue,
+                                            customProvider: providerValue === 'custom' ? (i.config.customProvider || '') : undefined
+                                          } 
+                                        }
+                                      : i
+                                  );
+                                  setIntegrations(updated);
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              >
+                                <option value="">Select Provider</option>
+                                <option value="stripe">Stripe</option>
+                                <option value="paypal">PayPal</option>
+                                <option value="razorpay">Razorpay</option>
+                                <option value="sslcommerz">SSLCommerz</option>
+                                <option value="bKash">bKash</option>
+                                <option value="custom">Custom Provider</option>
+                              </select>
+                            </div>
+                            {integration.config.provider === 'custom' && (
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                  Custom Provider Name
+                                </label>
+                                <input
+                                  type="text"
+                                  value={integration.config.customProvider || ''}
+                                  onChange={(e) => {
+                                    const updated = integrations.map(i => 
+                                      i.id === editingIntegration 
+                                        ? { ...i, config: { ...i.config, customProvider: e.target.value } }
+                                        : i
+                                    );
+                                    setIntegrations(updated);
+                                  }}
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  placeholder="Enter custom provider name"
+                                />
+                              </div>
+                            )}
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Merchant ID
+                              </label>
+                              <input
+                                type="text"
+                                value={integration.config.merchantId}
+                                onChange={(e) => {
+                                  const updated = integrations.map(i => 
+                                    i.id === editingIntegration 
+                                      ? { ...i, config: { ...i.config, merchantId: e.target.value } }
+                                      : i
+                                  );
+                                  setIntegrations(updated);
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Merchant ID"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                API Key
+                              </label>
+                              <input
+                                type="password"
+                                value={integration.config.apiKey}
+                                onChange={(e) => {
+                                  const updated = integrations.map(i => 
+                                    i.id === editingIntegration 
+                                      ? { ...i, config: { ...i.config, apiKey: e.target.value } }
+                                      : i
+                                  );
+                                  setIntegrations(updated);
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="API Key"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Secret Key
+                              </label>
+                              <input
+                                type="password"
+                                value={integration.config.secretKey}
+                                onChange={(e) => {
+                                  const updated = integrations.map(i => 
+                                    i.id === editingIntegration 
+                                      ? { ...i, config: { ...i.config, secretKey: e.target.value } }
+                                      : i
+                                  );
+                                  setIntegrations(updated);
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Secret Key"
+                              />
+                            </div>
+                          </>
+                        )}
+
+                        {integration.id === 'cloud-storage' && (
+                          <>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Provider
+                              </label>
+                              <select
+                                value={integration.config.provider === 'custom' ? 'custom' : integration.config.provider}
+                                onChange={(e) => {
+                                  const providerValue = e.target.value;
+                                  const updated = integrations.map(i => 
+                                    i.id === editingIntegration 
+                                      ? { 
+                                          ...i, 
+                                          config: { 
+                                            ...i.config, 
+                                            provider: providerValue,
+                                            customProvider: providerValue === 'custom' ? (i.config.customProvider || '') : undefined
+                                          } 
+                                        }
+                                      : i
+                                  );
+                                  setIntegrations(updated);
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              >
+                                <option value="">Select Provider</option>
+                                <option value="aws-s3">AWS S3</option>
+                                <option value="google-cloud">Google Cloud Storage</option>
+                                <option value="azure">Azure Blob Storage</option>
+                                <option value="dropbox">Dropbox</option>
+                                <option value="custom">Custom Provider</option>
+                              </select>
+                            </div>
+                            {integration.config.provider === 'custom' && (
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                  Custom Provider Name
+                                </label>
+                                <input
+                                  type="text"
+                                  value={integration.config.customProvider || ''}
+                                  onChange={(e) => {
+                                    const updated = integrations.map(i => 
+                                      i.id === editingIntegration 
+                                        ? { ...i, config: { ...i.config, customProvider: e.target.value } }
+                                        : i
+                                    );
+                                    setIntegrations(updated);
+                                  }}
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  placeholder="Enter custom provider name"
+                                />
+                              </div>
+                            )}
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Bucket Name
+                              </label>
+                              <input
+                                type="text"
+                                value={integration.config.bucketName}
+                                onChange={(e) => {
+                                  const updated = integrations.map(i => 
+                                    i.id === editingIntegration 
+                                      ? { ...i, config: { ...i.config, bucketName: e.target.value } }
+                                      : i
+                                  );
+                                  setIntegrations(updated);
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Bucket Name"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Access Key
+                              </label>
+                              <input
+                                type="password"
+                                value={integration.config.accessKey}
+                                onChange={(e) => {
+                                  const updated = integrations.map(i => 
+                                    i.id === editingIntegration 
+                                      ? { ...i, config: { ...i.config, accessKey: e.target.value } }
+                                      : i
+                                  );
+                                  setIntegrations(updated);
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Access Key"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Secret Key
+                              </label>
+                              <input
+                                type="password"
+                                value={integration.config.secretKey}
+                                onChange={(e) => {
+                                  const updated = integrations.map(i => 
+                                    i.id === editingIntegration 
+                                      ? { ...i, config: { ...i.config, secretKey: e.target.value } }
+                                      : i
+                                  );
+                                  setIntegrations(updated);
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Secret Key"
+                              />
+                            </div>
+                          </>
+                        )}
+
+                        <div className="flex items-center space-x-2">
+                          <input
+                            type="checkbox"
+                            id="integration-status"
+                            checked={integration.status === 'connected'}
+                            onChange={(e) => {
+                              const updated = integrations.map(i => 
+                                i.id === editingIntegration 
+                                  ? { ...i, status: e.target.checked ? 'connected' : 'disconnected' }
+                                  : i
+                              );
+                              setIntegrations(updated);
+                            }}
+                            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                          />
+                          <label htmlFor="integration-status" className="text-sm font-medium text-gray-700">
+                            ইন্টিগ্রেশন সক্রিয় করুন
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <div className="text-center py-12">
+                    <p className="text-gray-600">নতুন ইন্টিগ্রেশন যোগ করার অপশন শীঘ্রই আসছে...</p>
+                  </div>
+                )}
+
+                <div className="flex justify-end space-x-3 pt-6 border-t border-gray-200 mt-6">
+                  <button
+                    onClick={() => {
+                      setShowIntegrationModal(false);
+                      setEditingIntegration(null);
+                    }}
+                    className="px-6 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg font-medium transition-colors"
+                  >
+                    বাতিল
+                  </button>
+                  {editingIntegration && (
+                    <button
+                      onClick={() => {
+                        // Save integration config
+                        setShowIntegrationModal(false);
+                        setEditingIntegration(null);
+                        setSaveMessage('ইন্টিগ্রেশন কনফিগারেশন সংরক্ষণ করা হয়েছে');
+                        setTimeout(() => setSaveMessage(''), 3000);
+                      }}
+                      className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors flex items-center space-x-2"
+                    >
+                      <Save className="w-4 h-4" />
+                      <span>সংরক্ষণ করুন</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SMS Template Modal */}
+      {showTemplateModal && (
+        <div className="fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black bg-opacity-30"
+            style={{
+              backdropFilter: 'blur(4px)',
+              WebkitBackdropFilter: 'blur(4px)',
+              background: 'rgba(0, 0, 0, 0.3)'
+            }}
+            onClick={() => {
+              setShowTemplateModal(false);
+              setEditingTemplate(null);
+            }}
+          />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div 
+              className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between p-6 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900">
+                    {editingTemplate ? 'টেম্পলেট সম্পাদনা করুন' : 'নতুন SMS টেম্পলেট'}
+                  </h2>
+                  <p className="text-sm text-gray-600 mt-1">
+                    SMS টেম্পলেট তৈরি করুন এবং ভেরিয়েবল ব্যবহার করুন
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowTemplateModal(false);
+                    setEditingTemplate(null);
+                  }}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    টেম্পলেট নাম *
+                  </label>
+                  <input
+                    type="text"
+                    value={editingTemplate?.name || ''}
+                    onChange={(e) => {
+                      if (editingTemplate) {
+                        setEditingTemplate({ ...editingTemplate, name: e.target.value });
+                      } else {
+                        setEditingTemplate({
+                          id: Date.now().toString(),
+                          name: e.target.value,
+                          message: '',
+                          category: 'general'
+                        });
+                      }
+                    }}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="যেমন: ফি রিমাইন্ডার, উপস্থিতি নোটিশ"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    ক্যাটাগরি
+                  </label>
+                  <input
+                    type="text"
+                    list="category-options"
+                    value={editingTemplate?.category || ''}
+                    onChange={(e) => {
+                      if (editingTemplate) {
+                        setEditingTemplate({ ...editingTemplate, category: e.target.value });
+                      } else {
+                        setEditingTemplate({
+                          id: Date.now().toString(),
+                          name: '',
+                          message: '',
+                          category: e.target.value
+                        });
+                      }
+                    }}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="ক্যাটাগরি নির্বাচন করুন বা নতুন নাম লিখুন"
+                  />
+                  <datalist id="category-options">
+                    {/* Fee Sub-categories */}
+                    <option value="Tuition Fee">Tuition Fee - মাসিক বা নিয়মিত টিউশন ফি সংক্রান্ত বার্তা</option>
+                    <option value="Exam Fee">Exam Fee - পরীক্ষার ফি পরিশোধ বা রিমাইন্ডার বার্তা</option>
+                    <option value="Admission Fee">Admission Fee - ভর্তি বা পুনঃভর্তি ফি সংক্রান্ত বার্তা</option>
+                    <option value="Library Fee">Library Fee - লাইব্রেরি ফি বাকি বা পরিশোধ বার্তা</option>
+                    <option value="Transport Fee">Transport Fee - বাস/গাড়ি সার্ভিস ফি সংক্রান্ত বার্তা</option>
+                    <option value="Miscellaneous Fee">Miscellaneous Fee - অন্যান্য ফি (যেমন পোশাক, ইভেন্ট, ফাইন ইত্যাদি)</option>
+                    
+                    {/* Other Categories */}
+                    <option value="Attendance">Attendance - উপস্থিতি, অনুপস্থিতি বা দেরিতে আসা সংক্রান্ত বার্তা</option>
+                    <option value="Exam">Exam - পরীক্ষা রুটিন, ফলাফল বা নম্বর সংক্রান্ত বার্তা</option>
+                    <option value="Event">Event - অনুষ্ঠান, সভা, ছুটি বা বিশেষ নোটিস সংক্রান্ত বার্তা</option>
+                    <option value="Admission">Admission - ভর্তি বা নতুন ছাত্র-ছাত্রী সংক্রান্ত বার্তা</option>
+                    <option value="Emergency">Emergency - জরুরি ঘোষণা বা নিরাপত্তা বার্তা</option>
+                    <option value="Reminder">Reminder - স্মরণ করিয়ে দেওয়া বার্তা (যেমন ফর্ম জমা)</option>
+                    <option value="Congratulations">Congratulations - অভিনন্দন বা শুভেচ্ছা বার্তা</option>
+                    <option value="General">General - সাধারণ তথ্য বা নোটিস বার্তা</option>
+                    <option value="Fee Payment">Fee Payment - ফি পরিশোধের নিশ্চিতকরণ বার্তা</option>
+                    <option value="Salary Payment">Salary Payment - বেতন পরিশোধের নিশ্চিতকরণ বার্তা</option>
+                  </datalist>
+                  <p className="text-xs text-gray-500 mt-1">
+                    ড্রপডাউন থেকে নির্বাচন করুন অথবা নতুন ক্যাটাগরি নাম লিখুন
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    SMS বার্তা
+                  </label>
+                  <textarea
+                    ref={messageTextareaRef}
+                    value={editingTemplate?.message || ''}
+                    onChange={(e) => {
+                      if (editingTemplate) {
+                        setEditingTemplate({ ...editingTemplate, message: e.target.value });
+                      } else {
+                        setEditingTemplate({
+                          id: Date.now().toString(),
+                          name: '',
+                          message: e.target.value,
+                          category: 'general'
+                        });
+                      }
+                    }}
+                    onSelect={(e) => {
+                      // Store cursor position for variable insertion
+                      const textarea = e.target as HTMLTextAreaElement;
+                      textarea.setAttribute('data-selection-start', textarea.selectionStart.toString());
+                      textarea.setAttribute('data-selection-end', textarea.selectionEnd.toString());
+                    }}
+                    onKeyUp={(e) => {
+                      // Update cursor position on key press
+                      const textarea = e.target as HTMLTextAreaElement;
+                      textarea.setAttribute('data-selection-start', textarea.selectionStart.toString());
+                      textarea.setAttribute('data-selection-end', textarea.selectionEnd.toString());
+                    }}
+                    rows={6}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="যেমন: প্রিয় {guardianName}, {studentName} এর {className} শ্রেণির ফি {amount} টাকা বাকি আছে। অনুগ্রহ করে পরিশোধ করুন। - {schoolName}"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    ভেরিয়েবল ব্যবহার করুন: {'{studentName}'}, {'{className}'}, {'{rollNumber}'}, {'{guardianName}'}, {'{amount}'}, {'{date}'}, {'{schoolName}'}, {'{month}'}, {'{months}'}, {'{session}'}, {'{examDate}'}, {'{examName}'}, {'{resultDate}'}, {'{examFee}'}, {'{tuitionFee}'}, {'{admissionFee}'}, {'{sessionFee}'}, {'{teachingSalary}'} ইত্যাদি
+                  </p>
+                </div>
+
+                {/* Variable Helper */}
+                <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  <h4 className="text-sm font-semibold text-blue-900 mb-2">দ্রুত যোগ করুন:</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {['{studentName}', '{className}', '{rollNumber}', '{guardianName}', '{guardianPhone}', '{amount}', '{date}', '{schoolName}', '{feeType}', '{receiptNumber}', '{teacherName}', '{month}', '{months}', '{session}', '{examDate}', '{examName}', '{resultDate}', '{examFee}', '{tuitionFee}', '{admissionFee}', '{sessionFee}', '{teachingSalary}'].map((variable) => (
+                      <button
+                        key={variable}
+                        type="button"
+                        onClick={() => {
+                          const textarea = messageTextareaRef.current;
+                          if (!textarea) return;
+
+                          const currentMessage = editingTemplate?.message || '';
+                          
+                          // Get cursor position from textarea or use stored selection
+                          const selectionStart = parseInt(textarea.getAttribute('data-selection-start') || String(textarea.selectionStart || currentMessage.length));
+                          const selectionEnd = parseInt(textarea.getAttribute('data-selection-end') || String(textarea.selectionEnd || currentMessage.length));
+                          
+                          // Insert variable at cursor position
+                          const beforeCursor = currentMessage.substring(0, selectionStart);
+                          const afterCursor = currentMessage.substring(selectionEnd);
+                          const newMessage = beforeCursor + variable + afterCursor;
+                          
+                          if (editingTemplate) {
+                            setEditingTemplate({
+                              ...editingTemplate,
+                              message: newMessage
+                            });
+                          } else {
+                            setEditingTemplate({
+                              id: Date.now().toString(),
+                              name: '',
+                              message: newMessage,
+                              category: 'general'
+                            });
+                          }
+                          
+                          // Set cursor position after the inserted variable
+                          setTimeout(() => {
+                            textarea.focus();
+                            const newCursorPos = selectionStart + variable.length;
+                            textarea.setSelectionRange(newCursorPos, newCursorPos);
+                          }, 0);
+                        }}
+                        className="px-3 py-1 text-xs bg-white text-blue-700 border border-blue-300 rounded hover:bg-blue-100 transition-colors cursor-pointer"
+                      >
+                        {variable}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Preview */}
+                {editingTemplate?.message && (
+                  <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    <div className="flex justify-between items-center mb-2">
+                      <h4 className="text-sm font-semibold text-gray-700">প্রিভিউ:</h4>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setLoadingPreview(true);
+                          try {
+                            const students = await studentQueries.getAllStudents(true);
+                            if (students.length > 0) {
+                              const randomStudent = students[Math.floor(Math.random() * students.length)];
+                              setPreviewStudent(randomStudent);
+                            } else {
+                              setPreviewStudent(null);
+                            }
+                          } catch (error) {
+                            console.error('Error loading student:', error);
+                            setPreviewStudent(null);
+                          } finally {
+                            setLoadingPreview(false);
+                          }
+                        }}
+                        className="text-xs text-blue-600 hover:text-blue-800 underline"
+                        disabled={loadingPreview}
+                      >
+                        {loadingPreview ? 'লোড হচ্ছে...' : 'রিয়েল ডাটা দেখুন'}
+                      </button>
+                    </div>
+                    {previewStudent ? (
+                      <p className="text-sm text-gray-600 whitespace-pre-wrap">
+                        {editingTemplate.message
+                          .replace(/{studentName}/g, previewStudent.displayName || previewStudent.name || 'মোহাম্মদ রহিম')
+                          .replace(/{className}/g, previewStudent.class || '১০ম শ্রেণি')
+                          .replace(/{rollNumber}/g, previewStudent.rollNumber?.toString() || '০১')
+                          .replace(/{guardianName}/g, previewStudent.guardianName || 'মোহাম্মদ আলী')
+                          .replace(/{guardianPhone}/g, previewStudent.guardianPhone || '০১৭১২৩৪৫৬৭৮')
+                          .replace(/{amount}/g, '৫০০০')
+                          .replace(/{date}/g, new Date().toLocaleDateString('bn-BD'))
+                          .replace(/{schoolName}/g, formData.schoolName || 'ইকরা স্কুল')
+                          .replace(/{message}/g, 'সংদেশ')
+                          .replace(/{achievement}/g, 'সাফল্য')
+                          .replace(/{feeType}/g, 'টিউশন')
+                          .replace(/{receiptNumber}/g, 'RCP-2024-001')
+                          .replace(/{teacherName}/g, 'মোহাম্মদ আলী')
+                          .replace(/{month}/g, 'জানুয়ারি')
+                          .replace(/{months}/g, 'জানুয়ারি, ফেব্রুয়ারি, মার্চ, এপ্রিল, মে, জুন')
+                          .replace(/{session}/g, '২০২৪-২০২৫')
+                          .replace(/{examDate}/g, '১৫ জানুয়ারি, ২০২৫')
+                          .replace(/{examName}/g, 'অর্ধবার্ষিক পরীক্ষা')
+                          .replace(/{resultDate}/g, '৩০ জানুয়ারি, ২০২৫')}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-gray-600 whitespace-pre-wrap">
+                        {editingTemplate.message
+                          .replace(/{studentName}/g, 'মোহাম্মদ রহিম')
+                          .replace(/{className}/g, '১০ম শ্রেণি')
+                          .replace(/{rollNumber}/g, '০১')
+                          .replace(/{guardianName}/g, 'মোহাম্মদ আলী')
+                          .replace(/{guardianPhone}/g, '০১৭১২৩৪৫৬৭৮')
+                          .replace(/{amount}/g, '৫০০০')
+                          .replace(/{date}/g, new Date().toLocaleDateString('bn-BD'))
+                          .replace(/{schoolName}/g, formData.schoolName || 'ইকরা স্কুল')
+                          .replace(/{message}/g, 'সংদেশ')
+                          .replace(/{achievement}/g, 'সাফল্য')
+                          .replace(/{feeType}/g, 'টিউশন')
+                          .replace(/{receiptNumber}/g, 'RCP-2024-001')
+                          .replace(/{teacherName}/g, 'মোহাম্মদ আলী')
+                          .replace(/{month}/g, 'জানুয়ারি')
+                          .replace(/{months}/g, 'জানুয়ারি, ফেব্রুয়ারি, মার্চ, এপ্রিল, মে, জুন')
+                          .replace(/{session}/g, '২০২৪-২০২৫')
+                          .replace(/{examDate}/g, '১৫ জানুয়ারি, ২০২৫')
+                          .replace(/{examName}/g, 'অর্ধবার্ষিক পরীক্ষা')
+                          .replace(/{resultDate}/g, '৩০ জানুয়ারি, ২০২৫')}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
+                  <button
+                    onClick={() => {
+                      setShowTemplateModal(false);
+                      setEditingTemplate(null);
+                    }}
+                    className="px-6 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg font-medium transition-colors"
+                  >
+                    বাতিল
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (!editingTemplate?.name || !editingTemplate?.message) {
+                        alert('টেম্পলেট নাম এবং বার্তা অবশ্যই প্রয়োজন');
+                        return;
+                      }
+
+                      // Extract variables from message
+                      const variableRegex = /\{([^}]+)\}/g;
+                      const variables: string[] = [];
+                      let match;
+                      while ((match = variableRegex.exec(editingTemplate.message)) !== null) {
+                        if (!variables.includes(match[0])) {
+                          variables.push(match[0]);
+                        }
+                      }
+
+                      if (editingTemplate.id && smsTemplates.find(t => t.id === editingTemplate.id)) {
+                        // Update existing template
+                        setSmsTemplates(smsTemplates.map(t => 
+                          t.id === editingTemplate.id 
+                            ? { ...editingTemplate, variables }
+                            : t
+                        ));
+                      } else {
+                        // Add new template
+                        setSmsTemplates([...smsTemplates, { ...editingTemplate, variables, id: Date.now().toString() }]);
+                      }
+
+                      setShowTemplateModal(false);
+                      setEditingTemplate(null);
+                      setSaveMessage('টেম্পলেট সংরক্ষণ করা হয়েছে। সেটিংস সংরক্ষণ করুন');
+                      setTimeout(() => setSaveMessage(''), 3000);
+                    }}
+                    className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors flex items-center space-x-2"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>সংরক্ষণ করুন</span>
                   </button>
                 </div>
               </div>

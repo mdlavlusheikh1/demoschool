@@ -15,11 +15,15 @@ export class QRUtils {
     rollNumber: string
   ): Promise<{ qrCode: string; qrData: string }> {
     try {
+      // School name mapping
+      const schoolName = schoolId === '102330' ? 'ইকরা নূরানী একাডেমি' : 'Unknown School';
+      
       // Create unique QR data with timestamp to prevent duplication
       const qrData = JSON.stringify({
         type: 'student_attendance',
         studentId,
         schoolId,
+        schoolName,
         rollNumber,
         timestamp: Date.now(),
         uuid: uuidv4()
@@ -104,6 +108,51 @@ export class QRUtils {
   static isValidStudentQR(qrData: string): boolean {
     const parsed = this.parseQRData(qrData);
     return parsed !== null && parsed.type === 'student_attendance';
+  }
+
+  /**
+   * Parse teacher QR code data
+   * @param qrData - The scanned QR code data
+   * @returns Parsed teacher QR data object or null if invalid
+   */
+  static parseTeacherQR(qrData: string): {
+    type: string;
+    teacherId: string;
+    schoolId: string;
+    schoolName: string;
+    subject?: string;
+    timestamp: number;
+    uuid: string;
+  } | null {
+    try {
+      const data = JSON.parse(qrData);
+      
+      // Validate required fields for teacher attendance QR
+      if (
+        data.type === 'teacher_attendance' &&
+        data.teacherId &&
+        data.schoolId &&
+        data.schoolName &&
+        data.timestamp &&
+        data.uuid
+      ) {
+        return data;
+      }
+      
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Validate if QR code is for teacher attendance
+   * @param qrData - The scanned QR code data
+   * @returns boolean
+   */
+  static isValidTeacherQR(qrData: string): boolean {
+    const parsed = this.parseTeacherQR(qrData);
+    return parsed !== null && parsed.type === 'teacher_attendance';
   }
 
   /**
@@ -239,6 +288,48 @@ export class QRUtils {
       return { qrCode, qrData };
     } catch (error) {
       throw new Error(`Failed to generate school QR code: ${error}`);
+    }
+  }
+
+  /**
+   * Generate QR code for teacher attendance
+   * @param teacherId - The teacher's ID
+   * @param schoolId - The school's ID
+   * @param schoolName - The school's name
+   * @param subject - The teacher's subject (optional)
+   * @returns Promise<{ qrCode: string; qrData: string }>
+   */
+  static async generateTeacherQR(
+    teacherId: string,
+    schoolId: string,
+    schoolName: string,
+    subject?: string
+  ): Promise<{ qrCode: string; qrData: string }> {
+    try {
+      // Create unique QR data with timestamp to prevent duplication
+      const qrData = JSON.stringify({
+        type: 'teacher_attendance',
+        teacherId,
+        schoolId,
+        schoolName,
+        subject: subject || 'Teacher',
+        timestamp: Date.now(),
+        uuid: uuidv4()
+      });
+
+      // Generate QR code as base64 data URL
+      const qrCode = await QRCode.toDataURL(qrData, {
+        width: 256,
+        margin: 2,
+        color: {
+          dark: '#000000',
+          light: '#FFFFFF',
+        },
+      });
+
+      return { qrCode, qrData };
+    } catch (error) {
+      throw new Error(`Failed to generate teacher QR code: ${error}`);
     }
   }
 }

@@ -4,10 +4,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
-import { serverTimestamp } from 'firebase/firestore';
+import { useAuth } from '@/contexts/AuthContext';
+import { serverTimestamp, collection, query, where, getDocs, doc, setDoc } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { attendanceQueries, studentQueries, User as StudentUser } from '@/lib/database-queries';
+import { attendanceQueries, studentQueries, teacherQueries, User as StudentUser, User as TeacherUser } from '@/lib/database-queries';
 import QRScanner from '@/components/QRScanner';
+import { QRUtils } from '@/lib/qr-utils';
 import {
   Home,
   Users,
@@ -37,23 +40,48 @@ import {
   RefreshCw,
   AlertCircle,
   Save,
-  IdCard
+  FileText,
+  Award,
+  MessageSquare,
+  Gift,
+  Sparkles,
+  Globe,
+  IdCard,
+  ArrowLeft
 } from 'lucide-react';
+
+interface TeacherAttendanceRecord {
+  id?: string;
+  teacherId: string;
+  teacherName: string;
+  teacherEmail: string;
+  date: string;
+  status: 'present' | 'absent' | 'late' | 'leave';
+  timestamp?: any;
+  entryTime?: any; // Time when teacher entered (first scan)
+  exitTime?: any; // Time when teacher exited (second scan)
+  markedBy?: string;
+}
 
 function TakeAttendancePage() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [attendanceType, setAttendanceType] = useState<'students' | 'teachers'>('students');
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [selectedClass, setSelectedClass] = useState('');
   const [students, setStudents] = useState<StudentUser[]>([]);
+  const [teachers, setTeachers] = useState<TeacherUser[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<Map<string, any>>(new Map());
+  const [teacherAttendanceRecords, setTeacherAttendanceRecords] = useState<Map<string, TeacherAttendanceRecord>>(new Map());
   const [scannedStudents, setScannedStudents] = useState<Set<string>>(new Set());
+  const [scannedTeachers, setScannedTeachers] = useState<Set<string>>(new Set());
   const [isScanning, setIsScanning] = useState(false);
-  const [scanResults, setScanResults] = useState<{studentName: string, timestamp: Date} | null>(null);
+  const [scanResults, setScanResults] = useState<{name: string, timestamp: Date, type: 'student' | 'teacher'} | null>(null);
   const [error, setError] = useState<string | React.JSX.Element>('');
   const [success, setSuccess] = useState('');
   const [studentsLoading, setStudentsLoading] = useState(false);
+  const [teachersLoading, setTeachersLoading] = useState(false);
   const [qrScannerError, setQrScannerError] = useState('');
   const [firebaseConnected, setFirebaseConnected] = useState(false);
   const [databaseStats, setDatabaseStats] = useState<any>({});
@@ -61,14 +89,33 @@ function TakeAttendancePage() {
   const [showNextButton, setShowNextButton] = useState(false);
   const [currentStudentToScan, setCurrentStudentToScan] = useState<StudentUser | null>(null);
   const [sequentialScanning, setSequentialScanning] = useState(false);
+  const [showAlertModal, setShowAlertModal] = useState(false);
+  const [alertMessage, setAlertMessage] = useState('');
+  const [alertType, setAlertType] = useState<'success' | 'error' | 'info'>('info');
+  const [imageError, setImageError] = useState(false);
+  const [saving, setSaving] = useState(false);
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { userData } = useAuth();
+
+  // Custom alert function
+  const showAlert = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setAlertMessage(message);
+    setAlertType(type);
+    setShowAlertModal(true);
+  };
+
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUser(user);
         loadStudents();
+        loadTeachers();
       } else {
         router.push('/auth/login');
       }
@@ -103,9 +150,55 @@ function TakeAttendancePage() {
     }
   };
 
+  const loadTeachers = async () => {
+    if (!user) return;
+
+    setTeachersLoading(true);
+    setError('');
+
+    try {
+      const teachersData = await teacherQueries.getAllTeachers();
+      setTeachers(teachersData.filter(t => t.isActive !== false));
+    } catch (error) {
+      console.error('Error loading teachers:', error);
+      setError('শিক্ষক লোড করতে সমস্যা হয়েছে');
+    } finally {
+      setTeachersLoading(false);
+    }
+  };
+
+  const loadTeacherAttendanceRecords = async () => {
+    if (!user) return;
+
+    try {
+      const attendanceRef = collection(db, 'teacherAttendance');
+      const q = query(
+        attendanceRef,
+        where('date', '==', selectedDate)
+      );
+
+      const querySnapshot = await getDocs(q);
+      const recordsMap = new Map<string, TeacherAttendanceRecord>();
+      
+      querySnapshot.forEach((doc) => {
+        const data = doc.data() as TeacherAttendanceRecord;
+        recordsMap.set(data.teacherId, {
+          id: doc.id,
+          ...data
+        });
+      });
+
+      setTeacherAttendanceRecords(recordsMap);
+    } catch (error) {
+      console.error('Error loading teacher attendance records:', error);
+    }
+  };
+
   useEffect(() => {
     if (user) {
       loadStudents();
+      loadTeachers();
+      loadTeacherAttendanceRecords();
       checkFirebaseConnection();
     }
   }, [user, selectedDate, selectedClass]);
@@ -145,11 +238,24 @@ function TakeAttendancePage() {
 
     // Show immediate feedback that scan was received
     setScanResults({
-      studentName: 'Processing...',
-      timestamp: new Date()
+      name: 'Processing...',
+      timestamp: new Date(),
+      type: attendanceType
     });
 
+    // Clear any previous errors
+    setError('');
+    setQrScannerError('');
+
     try {
+      // First, check if it's a teacher QR code
+      const teacherQR = QRUtils.parseTeacherQR(qrData);
+      if (teacherQR && teacherQR.type === 'teacher_attendance') {
+        console.log('✅ Found teacher attendance QR:', teacherQR);
+        await processTeacherQR(teacherQR);
+        return;
+      }
+
       // Extract student ID from parsed QR data
       let studentId = null;
       let qrType = null;
@@ -192,8 +298,24 @@ function TakeAttendancePage() {
       }
 
       if (!studentId) {
-        setError('QR কোডে শিক্ষার্থীর ID পাওয়া যায়নি');
+        showAlert('QR কোডে শিক্ষার্থীর ID পাওয়া যায়নি', 'error');
         return;
+      }
+
+      console.log('🔍 Looking for student with ID:', studentId);
+      console.log('📚 Total students in database:', students.length);
+      console.log('📋 First 3 students:', students.slice(0, 3).map(s => ({
+        uid: s.uid,
+        studentId: s.studentId,
+        rollNumber: s.rollNumber,
+        name: s.displayName || s.name
+      })));
+
+      // Extract rollNumber from parsed data if available
+      let rollNumber = null;
+      if (parsedData && parsedData.data && parsedData.data.rollNumber) {
+        rollNumber = parsedData.data.rollNumber;
+        console.log('📝 Roll number from QR:', rollNumber);
       }
 
       // Find student by ID - check multiple fields and formats
@@ -201,8 +323,19 @@ function TakeAttendancePage() {
         s.studentId === studentId ||
         s.uid === studentId ||
         (s.uid && s.uid.includes(studentId)) ||
-        (studentId && studentId.includes(s.uid))
+        (studentId && studentId.includes(s.uid)) ||
+        (rollNumber && s.rollNumber === rollNumber) // Also match by roll number
       );
+
+      console.log('🎯 Student found by UID/studentId/rollNumber:', student ? 'YES' : 'NO');
+      if (student) {
+        console.log('✅ Found student:', {
+          uid: student.uid,
+          name: student.displayName || student.name,
+          rollNumber: student.rollNumber,
+          class: student.class
+        });
+      }
 
       // If not found, try to find by partial matches or different formats
       if (!student) {
@@ -338,8 +471,9 @@ function TakeAttendancePage() {
       // Add to scanned students
       setScannedStudents(prev => new Set([...prev, student.uid]));
       setScanResults({
-        studentName: student.displayName || student.name || 'Unknown',
-        timestamp: new Date()
+        name: student.displayName || student.name || 'Unknown',
+        timestamp: new Date(),
+        type: 'student'
       });
 
       setSuccess(`${student.displayName || student.name} এর উপস্থিতি মার্ক করা হয়েছে`);
@@ -347,7 +481,270 @@ function TakeAttendancePage() {
 
     } catch (error) {
       console.error('Error processing QR scan:', error);
-      setError('QR কোড প্রসেস করতে সমস্যা হয়েছে');
+      showAlert('QR কোড প্রসেস করতে সমস্যা হয়েছে', 'error');
+    }
+  };
+
+  const processTeacherQR = async (teacherQR: { teacherId: string; schoolId: string; schoolName: string; subject?: string; timestamp: number; uuid: string }) => {
+    try {
+      const teacher = teachers.find(t => t.uid === teacherQR.teacherId);
+      
+      if (!teacher) {
+        showAlert('শিক্ষক পাওয়া যায়নি', 'error');
+        return;
+      }
+
+      const currentTime = new Date();
+      const currentHour = currentTime.getHours();
+      const currentMinute = currentTime.getMinutes();
+      
+      // Check if it's after 9:00 AM (9:00 = 9 hours, 0 minutes)
+      const isLate = currentHour > 9 || (currentHour === 9 && currentMinute > 0);
+
+      // Check if teacher already has attendance record for today
+      const existingRecord = teacherAttendanceRecords.get(teacher.uid);
+      
+      if (existingRecord) {
+        // Second scan - set exit time
+        if (!existingRecord.exitTime) {
+          await markTeacherExit(teacher.uid);
+          setSuccess(`${teacher.displayName || teacher.name} এর প্রস্থান সময় রেকর্ড করা হয়েছে`);
+          setTimeout(() => setSuccess(''), 3000);
+          
+          setScanResults({
+            name: teacher.displayName || teacher.name || 'Unknown',
+            timestamp: new Date(),
+            type: 'teacher'
+          });
+          return;
+        } else {
+          // Already scanned twice
+          const entryTime = (() => {
+            try {
+              const timestamp = existingRecord.entryTime || existingRecord.timestamp;
+              let date: Date;
+
+              if (timestamp && typeof timestamp === 'object' && 'toDate' in timestamp) {
+                date = timestamp.toDate();
+              } else if (timestamp instanceof Date) {
+                date = timestamp;
+              } else {
+                date = new Date(timestamp);
+              }
+
+              return date.toLocaleTimeString('bn-BD', {
+                hour: '2-digit',
+                minute: '2-digit'
+              });
+            } catch (error) {
+              return 'Unknown';
+            }
+          })();
+
+          const exitTime = (() => {
+            try {
+              const timestamp = existingRecord.exitTime;
+              let date: Date;
+
+              if (timestamp && typeof timestamp === 'object' && 'toDate' in timestamp) {
+                date = timestamp.toDate();
+              } else if (timestamp instanceof Date) {
+                date = timestamp;
+              } else {
+                date = new Date(timestamp);
+              }
+
+              return date.toLocaleTimeString('bn-BD', {
+                hour: '2-digit',
+                minute: '2-digit'
+              });
+            } catch (error) {
+              return 'Unknown';
+            }
+          })();
+
+          setError(
+            <div className="space-y-3 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="flex items-center space-x-2">
+                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                  <CheckCircle className="w-4 h-4 text-blue-600" />
+                </div>
+                <div>
+                  <p className="text-blue-800 font-medium">✅ স্ক্যান সম্পন্ন</p>
+                  <p className="text-blue-700 text-sm">{teacher.displayName || teacher.name}</p>
+                </div>
+              </div>
+              <div className="bg-white p-3 rounded border-l-4 border-blue-300">
+                <p className="text-sm text-gray-700 mb-1">ইতিমধ্যে প্রবেশ ও প্রস্থান স্ক্যান করা হয়েছে</p>
+                <p className="text-xs text-gray-600">
+                  প্রবেশ: <span className="font-medium text-green-600">{entryTime}</span> | 
+                  প্রস্থান: <span className="font-medium text-blue-600">{exitTime}</span>
+                </p>
+              </div>
+              <button
+                onClick={() => setError('')}
+                className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
+              >
+                বোঝা গেছে
+              </button>
+            </div>
+          );
+          return;
+        }
+      }
+
+      // First scan - set entry time and determine status
+      const status = isLate ? 'late' : 'present';
+      await markTeacherEntry(teacher.uid, status);
+
+      // Add to scanned teachers
+      setScannedTeachers(prev => new Set([...prev, teacher.uid]));
+      setScanResults({
+        name: teacher.displayName || teacher.name || 'Unknown',
+        timestamp: new Date(),
+        type: 'teacher'
+      });
+
+      setSuccess(`${teacher.displayName || teacher.name} এর প্রবেশ সময় রেকর্ড করা হয়েছে (${status === 'late' ? 'বিলম্বে' : 'উপস্থিত'})`);
+      setTimeout(() => setSuccess(''), 3000);
+
+    } catch (error) {
+      console.error('Error processing teacher QR scan:', error);
+      showAlert('শিক্ষক QR কোড প্রসেস করতে সমস্যা হয়েছে', 'error');
+    }
+  };
+
+  const markTeacherEntry = async (teacherId: string, status: 'present' | 'late') => {
+    if (!user) return;
+
+    setSaving(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const teacher = teachers.find(t => t.uid === teacherId);
+      if (!teacher) {
+        setError('শিক্ষক পাওয়া যায়নি');
+        return;
+      }
+
+      const existingRecord = teacherAttendanceRecords.get(teacherId);
+      const attendanceData: TeacherAttendanceRecord = {
+        teacherId,
+        teacherName: teacher.displayName || teacher.name || 'Unknown',
+        teacherEmail: teacher.email || '',
+        date: selectedDate,
+        status,
+        timestamp: serverTimestamp(),
+        entryTime: serverTimestamp(),
+        markedBy: user.uid
+      };
+
+      if (existingRecord?.id) {
+        // Update existing record with entry time
+        const docRef = doc(db, 'teacherAttendance', existingRecord.id);
+        await setDoc(docRef, {
+          ...attendanceData,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      } else {
+        // Create new record
+        const docRef = doc(collection(db, 'teacherAttendance'));
+        await setDoc(docRef, attendanceData);
+      }
+
+      await loadTeacherAttendanceRecords();
+    } catch (error) {
+      console.error('Error marking teacher entry:', error);
+      setError('প্রবেশ সময় রেকর্ড করতে সমস্যা হয়েছে');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const markTeacherExit = async (teacherId: string) => {
+    if (!user) return;
+
+    setSaving(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const teacher = teachers.find(t => t.uid === teacherId);
+      if (!teacher) {
+        setError('শিক্ষক পাওয়া যায়নি');
+        return;
+      }
+
+      const existingRecord = teacherAttendanceRecords.get(teacherId);
+      if (!existingRecord?.id) {
+        setError('প্রবেশ রেকর্ড পাওয়া যায়নি');
+        return;
+      }
+
+      // Update existing record with exit time
+      const docRef = doc(db, 'teacherAttendance', existingRecord.id);
+      await setDoc(docRef, {
+        exitTime: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+
+      await loadTeacherAttendanceRecords();
+    } catch (error) {
+      console.error('Error marking teacher exit:', error);
+      setError('প্রস্থান সময় রেকর্ড করতে সমস্যা হয়েছে');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const markTeacherAttendance = async (teacherId: string, status: 'present' | 'absent' | 'late' | 'leave') => {
+    if (!user) return;
+
+    setSaving(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const teacher = teachers.find(t => t.uid === teacherId);
+      if (!teacher) {
+        setError('শিক্ষক পাওয়া যায়নি');
+        return;
+      }
+
+      const existingRecord = teacherAttendanceRecords.get(teacherId);
+      const attendanceData: TeacherAttendanceRecord = {
+        teacherId,
+        teacherName: teacher.displayName || teacher.name || 'Unknown',
+        teacherEmail: teacher.email || '',
+        date: selectedDate,
+        status,
+        timestamp: serverTimestamp(),
+        markedBy: user.uid
+      };
+
+      if (existingRecord?.id) {
+        // Update existing record
+        const docRef = doc(db, 'teacherAttendance', existingRecord.id);
+        await setDoc(docRef, {
+          ...attendanceData,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+        setSuccess(`${teacher.displayName || teacher.name} এর উপস্থিতি আপডেট করা হয়েছে`);
+      } else {
+        // Create new record
+        const docRef = doc(collection(db, 'teacherAttendance'));
+        await setDoc(docRef, attendanceData);
+        setSuccess(`${teacher.displayName || teacher.name} এর উপস্থিতি মার্ক করা হয়েছে`);
+      }
+
+      await loadTeacherAttendanceRecords();
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (error) {
+      console.error('Error marking teacher attendance:', error);
+      setError('উপস্থিতি মার্ক করতে সমস্যা হয়েছে');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -365,7 +762,7 @@ function TakeAttendancePage() {
         studentEmail: student.email || '',
         classId: selectedClass,
         className: selectedClass,
-        schoolId: 'iqra-school',
+        schoolId: '102330',
         schoolName: 'আমার স্কুল',
         date: selectedDate,
         status,
@@ -412,7 +809,7 @@ function TakeAttendancePage() {
           studentName: student.displayName || student.name || 'Unknown',
           classId: selectedClass,
           className: selectedClass,
-          schoolId: 'iqra-school',
+          schoolId: '102330',
           date: selectedDate,
           status: 'present',
           timestamp: new Date() as any,
@@ -523,24 +920,27 @@ function TakeAttendancePage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
-    { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
-    { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
-    { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
     { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
+    { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: true },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
+    { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
+    { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
       {/* Sidebar */}
-      <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 lg:flex lg:flex-col ${
+      <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:sticky lg:top-0 lg:h-screen lg:flex lg:flex-col ${
         sidebarOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
         <div className="flex items-center h-16 px-6 border-b border-gray-200 bg-white">
@@ -597,18 +997,40 @@ function TakeAttendancePage() {
                 >
                   <Menu className="w-6 h-6" />
                 </button>
+                <button
+                  onClick={() => router.push('/admin/attendance')}
+                  className="mr-4 text-gray-600 hover:text-gray-900 transition-colors"
+                  title="পিছনে যান"
+                >
+                  <ArrowLeft className="w-6 h-6" />
+                </button>
                 <div className="flex flex-col justify-center h-full">
                   <h1 className="text-xl font-semibold text-gray-900 leading-tight">উপস্থিতি নিন</h1>
-                  <p className="text-sm text-gray-600 leading-tight">QR কোড স্ক্যান করে উপস্থিতি নিন</p>
+                  <p className="text-sm text-gray-600 leading-tight">
+                    {attendanceType === 'students' 
+                      ? 'শিক্ষার্থীদের QR কোড স্ক্যান করে উপস্থিতি নিন'
+                      : 'শিক্ষকদের QR কোড স্ক্যান করে উপস্থিতি নিন'}
+                  </p>
                 </div>
               </div>
 
               <div className="flex items-center space-x-4 h-full">
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">
-                    {user?.email?.charAt(0).toUpperCase()}
-                  </span>
+                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                  {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                    <img
+                      src={(userData as any)?.photoURL || user?.photoURL || ''}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => {
+                        setImageError(true);
+                      }}
+                    />
+                  ) : (
+                    <span className="text-white font-medium text-sm">
+                      {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -617,6 +1039,38 @@ function TakeAttendancePage() {
 
         {/* Page Content */}
         <div className="p-4 lg:p-6 bg-gray-50 min-h-screen">
+          {/* Tab Selector */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-2 mb-6 flex space-x-2">
+            <button
+              onClick={() => {
+                setAttendanceType('students');
+                setScanResults(null);
+              }}
+              className={`flex-1 px-4 py-2 rounded-lg font-medium transition-colors ${
+                attendanceType === 'students'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              <Users className="w-4 h-4 inline mr-2" />
+              শিক্ষার্থী উপস্থিতি
+            </button>
+            <button
+              onClick={() => {
+                setAttendanceType('teachers');
+                setScanResults(null);
+              }}
+              className={`flex-1 px-4 py-2 rounded-lg font-medium transition-colors ${
+                attendanceType === 'teachers'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              <GraduationCap className="w-4 h-4 inline mr-2" />
+              শিক্ষক উপস্থিতি
+            </button>
+          </div>
+
           {/* Quick Controls */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 mb-6">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-4 sm:space-y-0">
@@ -626,36 +1080,49 @@ function TakeAttendancePage() {
                   <span className="text-sm text-gray-600">তারিখ: {new Date().toLocaleDateString('bn-BD')}</span>
                 </div>
                 <div className="flex items-center space-x-2">
-                  <Users className="w-5 h-5 text-green-600" />
-                  <span className="text-sm text-gray-600">মোট শিক্ষার্থী: {students.length}</span>
+                  {attendanceType === 'students' ? (
+                    <>
+                      <Users className="w-5 h-5 text-green-600" />
+                      <span className="text-sm text-gray-600">মোট শিক্ষার্থী: {students.length}</span>
+                    </>
+                  ) : (
+                    <>
+                      <GraduationCap className="w-5 h-5 text-green-600" />
+                      <span className="text-sm text-gray-600">মোট শিক্ষক: {teachers.length}</span>
+                    </>
+                  )}
                 </div>
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={startSequentialScanning}
-                  disabled={students.length === 0 || sequentialScanning}
-                  className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
-                >
-                  <UserCheck className="w-4 h-4" />
-                  <span>ক্রমিক স্ক্যান শুরু</span>
-                </button>
-                <button
-                  onClick={markAllPresent}
-                  disabled={students.length === 0}
-                  className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
-                >
-                  <CheckCircle className="w-4 h-4" />
-                  <span>সকলকে উপস্থিত মার্ক করুন</span>
-                </button>
-                <button
-                  onClick={resetAttendance}
-                  disabled={attendanceRecords.size === 0}
-                  className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  <span>রিসেট</span>
-                </button>
+                {attendanceType === 'students' && (
+                  <>
+                    <button
+                      onClick={startSequentialScanning}
+                      disabled={students.length === 0 || sequentialScanning}
+                      className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+                    >
+                      <UserCheck className="w-4 h-4" />
+                      <span>ক্রমিক স্ক্যান শুরু</span>
+                    </button>
+                    <button
+                      onClick={markAllPresent}
+                      disabled={students.length === 0}
+                      className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      <span>সকলকে উপস্থিত মার্ক করুন</span>
+                    </button>
+                    <button
+                      onClick={resetAttendance}
+                      disabled={attendanceRecords.size === 0}
+                      className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      <span>রিসেট</span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -687,19 +1154,39 @@ function TakeAttendancePage() {
                 </div>
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900">QR কোড স্ক্যানার</h3>
-                  <p className="text-sm text-gray-600">শিক্ষার্থীদের QR কোড স্ক্যান করে উপস্থিতি নিন</p>
+                  <p className="text-sm text-gray-600">
+                    {attendanceType === 'students' 
+                      ? 'শিক্ষার্থীদের QR কোড স্ক্যান করে উপস্থিতি নিন'
+                      : 'শিক্ষকদের QR কোড স্ক্যান করে উপস্থিতি নিন'}
+                  </p>
                 </div>
               </div>
 
               <div className="flex justify-center">
-                <div className="bg-white rounded-lg p-4 border-2 border-blue-200">
+                <div className="bg-white rounded-lg p-4 border-2 border-blue-200 relative">
                   <QRScanner
                     onScanSuccess={handleQRCodeScanned}
                     onScanError={(error) => setQrScannerError(error)}
                     width={320}
                     height={320}
                   />
+                  {scanResults && (
+                    <div className="absolute top-2 right-2 bg-green-500 text-white px-3 py-1 rounded-full text-xs font-medium animate-pulse">
+                      স্ক্যান হচ্ছে...
+                    </div>
+                  )}
                 </div>
+              </div>
+
+              {/* Scan Instructions */}
+              <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm text-blue-800 font-medium mb-2">📱 স্ক্যান করার নির্দেশনা:</p>
+                <ul className="text-xs text-blue-700 space-y-1">
+                  <li>• {attendanceType === 'students' ? 'শিক্ষার্থীর' : 'শিক্ষকের'} QR কোডটি সাদা বক্সের মধ্যে রাখুন</li>
+                  <li>• ক্যামেরা থেকে ১৫-৩০ সেমি দূরত্বে রাখুন</li>
+                  <li>• পর্যাপ্ত আলো নিশ্চিত করুন (টর্চ ব্যবহার করুন)</li>
+                  <li>• QR কোড স্থির রাখুন ২-৩ সেকেন্ড</li>
+                </ul>
               </div>
 
               {qrScannerError && (
@@ -721,23 +1208,50 @@ function TakeAttendancePage() {
                 </div>
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900">স্ক্যান রেজাল্ট</h3>
-                  <p className="text-sm text-gray-600">স্ক্যান করা শিক্ষার্থীদের তালিকা</p>
+                  <p className="text-sm text-gray-600">
+                    {attendanceType === 'students' 
+                      ? 'স্ক্যান করা শিক্ষার্থীদের তালিকা'
+                      : 'স্ক্যান করা শিক্ষকদের তালিকা'}
+                  </p>
                 </div>
               </div>
 
               <div className="space-y-3 mb-4">
-                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                  <span className="text-sm text-gray-600">মোট শিক্ষার্থী:</span>
-                  <span className="font-semibold text-gray-900">{filteredStudents.length}</span>
-                </div>
-                <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
-                  <span className="text-sm text-gray-600">স্ক্যান করা:</span>
-                  <span className="font-semibold text-green-600">{scannedStudents.size}</span>
-                </div>
-                <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg">
-                  <span className="text-sm text-gray-600">উপস্থিতির হার:</span>
-                  <span className="font-semibold text-blue-600">{attendancePercentage}%</span>
-                </div>
+                {attendanceType === 'students' ? (
+                  <>
+                    <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                      <span className="text-sm text-gray-600">মোট শিক্ষার্থী:</span>
+                      <span className="font-semibold text-gray-900">{filteredStudents.length}</span>
+                    </div>
+                    <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
+                      <span className="text-sm text-gray-600">স্ক্যান করা:</span>
+                      <span className="font-semibold text-green-600">{scannedStudents.size}</span>
+                    </div>
+                    <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg">
+                      <span className="text-sm text-gray-600">উপস্থিতির হার:</span>
+                      <span className="font-semibold text-blue-600">{attendancePercentage}%</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                      <span className="text-sm text-gray-600">মোট শিক্ষক:</span>
+                      <span className="font-semibold text-gray-900">{teachers.length}</span>
+                    </div>
+                    <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
+                      <span className="text-sm text-gray-600">স্ক্যান করা:</span>
+                      <span className="font-semibold text-green-600">{scannedTeachers.size}</span>
+                    </div>
+                    <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg">
+                      <span className="text-sm text-gray-600">উপস্থিতির হার:</span>
+                      <span className="font-semibold text-blue-600">
+                        {teachers.length > 0 
+                          ? ((scannedTeachers.size / teachers.length) * 100).toFixed(1)
+                          : '0'}%
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="flex-1 overflow-y-auto">
@@ -750,22 +1264,37 @@ function TakeAttendancePage() {
                   <div className="space-y-2">
                     <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
                       <div className="flex items-center justify-between">
-                        <span className="font-medium">{scanResults.studentName}</span>
+                        <span className="font-medium">{scanResults.name}</span>
                         <span className="text-xs text-green-600">
-                          {scanResults.timestamp.toLocaleTimeString('bn-BD', {
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}
+                          {(() => {
+                            try {
+                              const date = scanResults.timestamp instanceof Date 
+                                ? scanResults.timestamp 
+                                : new Date(scanResults.timestamp);
+                              return date.toLocaleTimeString('bn-BD', {
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              });
+                            } catch {
+                              return new Date().toLocaleTimeString('bn-BD', {
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              });
+                            }
+                          })()}
                         </span>
                       </div>
-                      <p className="text-xs text-green-600 mt-1">স্ক্যান করে উপস্থিতি মার্ক করা হয়েছে</p>
+                      <p className="text-xs text-green-600 mt-1">
+                        {scanResults.type === 'student' ? 'শিক্ষার্থী' : 'শিক্ষক'} স্ক্যান করে উপস্থিতি মার্ক করা হয়েছে
+                      </p>
                     </div>
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Right Column - Students List */}
+            {/* Right Column - Students/Teachers List */}
+            {attendanceType === 'students' ? (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-full">
               <div className="p-4 border-b border-gray-200 flex-shrink-0">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
@@ -907,11 +1436,257 @@ function TakeAttendancePage() {
                 )}
               </div>
             </div>
+            ) : (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-full">
+              <div className="p-4 border-b border-gray-200 flex-shrink-0">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900">শিক্ষক তালিকা</h3>
+                    <p className="text-sm text-gray-600">সকল শিক্ষক</p>
+                  </div>
+                  <button
+                    onClick={() => router.push('/admin/teachers/id-cards')}
+                    className="mt-2 sm:mt-0 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2"
+                  >
+                    <IdCard className="w-4 h-4" />
+                    <span>আইডি কার্ড তৈরি করুন</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-auto">
+                {teachersLoading ? (
+                  <div className="p-8 text-center">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2"></div>
+                    <p className="text-gray-600">শিক্ষক লোড হচ্ছে...</p>
+                  </div>
+                ) : teachers.length === 0 ? (
+                  <div className="p-8 text-center text-gray-500">
+                    <GraduationCap className="mx-auto h-12 w-12 mb-4 opacity-50" />
+                    <p>কোন শিক্ষক পাওয়া যায়নি</p>
+                  </div>
+                ) : (
+                  <div className="overflow-y-auto" style={{ maxHeight: '400px' }}>
+                    <table className="w-full">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">শিক্ষক</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">স্ট্যাটাস</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">প্রবেশ</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">প্রস্থান</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {teachers.map((teacher) => {
+                          const record = teacherAttendanceRecords.get(teacher.uid);
+                          const status = record?.status || null;
+
+                          return (
+                            <tr key={teacher.uid} className={`hover:bg-gray-50 ${
+                              scannedTeachers.has(teacher.uid) ? 'bg-green-50' : ''
+                            }`}>
+                              <td className="px-6 py-4 whitespace-nowrap">
+                                <div className="flex items-center">
+                                  <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center overflow-hidden">
+                                    {(teacher as any).profileImage ? (
+                                      <img
+                                        src={(teacher as any).profileImage}
+                                        alt={teacher.displayName || 'Teacher'}
+                                        className="w-full h-full object-cover"
+                                      />
+                                    ) : (
+                                      <span className="text-white font-medium text-sm">
+                                        {(teacher.displayName || teacher.name || 'T').charAt(0).toUpperCase()}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="ml-4">
+                                    <div className="text-sm font-medium text-gray-900">{teacher.displayName || teacher.name || 'Unknown'}</div>
+                                    <div className="text-sm text-gray-500">{(teacher as any).subject || 'N/A'}</div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap">
+                                <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                                  status === 'present'
+                                    ? 'bg-green-100 text-green-800'
+                                    : status === 'absent'
+                                    ? 'bg-red-100 text-red-800'
+                                    : status === 'late'
+                                    ? 'bg-yellow-100 text-yellow-800'
+                                    : status === 'leave'
+                                    ? 'bg-blue-100 text-blue-800'
+                                    : 'bg-gray-100 text-gray-800'
+                                }`}>
+                                  {status === 'present' ? 'উপস্থিত' : 
+                                   status === 'absent' ? 'অনুপস্থিত' : 
+                                   status === 'late' ? 'বিলম্বে' : 
+                                   status === 'leave' ? 'ছুটি' : 'পেন্ডিং'}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                {record?.entryTime ? (
+                                  <div className="flex items-center">
+                                    <Clock className="w-4 h-4 mr-1 text-green-500" />
+                                    <span className="text-green-700 font-medium">
+                                      {(() => {
+                                        try {
+                                          const timestamp = record.entryTime;
+                                          let date: Date;
+
+                                          if (timestamp && typeof timestamp === 'object' && 'toDate' in timestamp) {
+                                            date = timestamp.toDate();
+                                          } else if (timestamp instanceof Date) {
+                                            date = timestamp;
+                                          } else {
+                                            date = new Date(timestamp);
+                                          }
+
+                                          return date.toLocaleTimeString('bn-BD', {
+                                            hour: '2-digit',
+                                            minute: '2-digit',
+                                            second: '2-digit',
+                                            hour12: true
+                                          });
+                                        } catch (error) {
+                                          console.error('Error formatting entry time:', error);
+                                          return '--:--';
+                                        }
+                                      })()}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span className="text-gray-400">-</span>
+                                )}
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                {record?.exitTime ? (
+                                  <div className="flex items-center">
+                                    <Clock className="w-4 h-4 mr-1 text-blue-500" />
+                                    <span className="text-blue-700 font-medium">
+                                      {(() => {
+                                        try {
+                                          const timestamp = record.exitTime;
+                                          let date: Date;
+
+                                          if (timestamp && typeof timestamp === 'object' && 'toDate' in timestamp) {
+                                            date = timestamp.toDate();
+                                          } else if (timestamp instanceof Date) {
+                                            date = timestamp;
+                                          } else {
+                                            date = new Date(timestamp);
+                                          }
+
+                                          return date.toLocaleTimeString('bn-BD', {
+                                            hour: '2-digit',
+                                            minute: '2-digit',
+                                            second: '2-digit',
+                                            hour12: true
+                                          });
+                                        } catch (error) {
+                                          console.error('Error formatting exit time:', error);
+                                          return '--:--';
+                                        }
+                                      })()}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span className="text-gray-400">-</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+            )}
           </div>
 
 
         </div>
       </div>
+
+      {/* Custom Alert Modal */}
+      {showAlertModal && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+          onClick={() => {
+            setShowAlertModal(false);
+            setAlertMessage('');
+          }}
+        >
+          <div 
+            className="bg-white rounded-lg shadow-xl max-w-md w-full animate-scale-in relative"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => {
+                setShowAlertModal(false);
+                setAlertMessage('');
+              }}
+              className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className={`p-6 border-b ${
+              alertType === 'success' ? 'border-green-200 bg-green-50' :
+              alertType === 'error' ? 'border-red-200 bg-red-50' :
+              'border-blue-200 bg-blue-50'
+            }`}>
+              <div className="flex items-center space-x-3">
+                {alertType === 'success' && (
+                  <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
+                    <CheckCircle className="w-6 h-6 text-green-600" />
+                  </div>
+                )}
+                {alertType === 'error' && (
+                  <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+                    <XCircle className="w-6 h-6 text-red-600" />
+                  </div>
+                )}
+                {alertType === 'info' && (
+                  <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
+                    <AlertCircle className="w-6 h-6 text-blue-600" />
+                  </div>
+                )}
+                <div className="flex-1">
+                  <h3 className={`text-lg font-semibold ${
+                    alertType === 'success' ? 'text-green-900' :
+                    alertType === 'error' ? 'text-red-900' :
+                    'text-blue-900'
+                  }`}>
+                    {alertType === 'success' ? 'সফল!' :
+                     alertType === 'error' ? 'ত্রুটি!' :
+                     'তথ্য'}
+                  </h3>
+                </div>
+              </div>
+            </div>
+            <div className="p-6">
+              <p className="text-gray-700 text-base leading-relaxed">{alertMessage}</p>
+            </div>
+            <div className="p-6 bg-gray-50 border-t border-gray-200 flex justify-end">
+              <button
+                onClick={() => {
+                  setShowAlertModal(false);
+                  setAlertMessage('');
+                }}
+                className={`px-6 py-2 rounded-lg font-medium transition-colors ${
+                  alertType === 'success' ? 'bg-green-600 hover:bg-green-700 text-white' :
+                  alertType === 'error' ? 'bg-red-600 hover:bg-red-700 text-white' :
+                  'bg-blue-600 hover:bg-blue-700 text-white'
+                }`}
+              >
+                ঠিক আছে
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

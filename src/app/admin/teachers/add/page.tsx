@@ -4,8 +4,10 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { teacherQueries, settingsQueries, User as TeacherUser } from '@/lib/database-queries';
+import { SCHOOL_ID, SCHOOL_NAME } from '@/lib/constants';
 import {
   Home,
   Users,
@@ -43,7 +45,13 @@ import {
   User,
   FileText,
   Save,
-  ArrowLeft
+  ArrowLeft,
+  Globe,
+  BookOpen as BookOpenIcon,
+  MessageSquare,
+  Gift,
+  Sparkles,
+  Users as UsersIcon
 } from 'lucide-react';
 
 function AddTeacherPage() {
@@ -51,6 +59,8 @@ function AddTeacherPage() {
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settings, setSettings] = useState<any>(null);
+  const [imageError, setImageError] = useState(false);
+  const { userData } = useAuth();
 
   // Teacher form state
   const [newTeacher, setNewTeacher] = useState({
@@ -96,7 +106,7 @@ function AddTeacherPage() {
     emergencyContactRelation: '',
 
     // Additional Information
-    profileImage: null as File | null,
+    profileImage: null as File | string | null,
     resume: null as File | null,
     certificates: [] as File[],
     languages: '',
@@ -138,6 +148,11 @@ function AddTeacherPage() {
     '১০-১৫ বছর', '১৫-২০ বছর', '২০ বছরের বেশি'
   ];
 
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
@@ -159,8 +174,8 @@ function AddTeacherPage() {
         setSettings(systemSettings);
         setNewTeacher(prev => ({
           ...prev,
-          schoolId: systemSettings?.schoolCode || 'IQRA-2025',
-          schoolName: systemSettings?.schoolName || 'আমার স্কুল'
+          schoolId: systemSettings?.schoolCode || SCHOOL_ID,
+          schoolName: systemSettings?.schoolName || SCHOOL_NAME
         }));
       } catch (error) {
         console.error('Error loading settings:', error);
@@ -172,18 +187,38 @@ function AddTeacherPage() {
 
   // Auto-generate employee ID
   useEffect(() => {
-    if (newTeacher.name && !newTeacher.employeeId) {
-      const timestamp = Date.now().toString().slice(-6);
-      const nameInitials = newTeacher.name
-        .split(' ')
-        .map(word => word.charAt(0))
-        .join('')
-        .toUpperCase()
-        .slice(0, 3);
-      const employeeId = `TCH${nameInitials}${timestamp}`;
-      setNewTeacher(prev => ({ ...prev, employeeId }));
+    if (newTeacher.employeeId) {
+      return;
     }
-  }, [newTeacher.name]);
+
+    const generateEmployeeId = async () => {
+      try {
+        const settings = await settingsQueries.getSettings();
+        const schoolCode = settings?.schoolCode || SCHOOL_ID;
+        const prefix = `${schoolCode}-TCH`;
+
+        const latestTeacher = await teacherQueries.getLatestTeacherByEmployeeId(prefix);
+        let nextNumber = 1;
+
+        if (latestTeacher?.employeeId) {
+          const match = latestTeacher.employeeId.match(/(\d+)$/);
+          if (match) {
+            nextNumber = parseInt(match[1], 10) + 1;
+          }
+        }
+
+        const formattedNumber = nextNumber.toString().padStart(3, '0');
+        const employeeId = `${prefix}${formattedNumber}`;
+
+        setNewTeacher(prev => ({ ...prev, employeeId }));
+      } catch (error) {
+        console.error('Error generating employee ID:', error);
+        setNewTeacher(prev => ({ ...prev, employeeId: `TCH${Date.now().toString().slice(-3)}` }));
+      }
+    };
+
+    generateEmployeeId();
+  }, [newTeacher.employeeId]);
 
   const handleLogout = async () => {
     try {
@@ -202,26 +237,91 @@ function AddTeacherPage() {
     }
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 10 * 1024 * 1024) {
-        setErrors({ ...errors, profileImage: 'ফাইলের আকার ১০MB এর বেশি হতে পারবে না' });
-        return;
-      }
+    if (!file) {
+      return;
+    }
 
-      if (!file.type.startsWith('image/')) {
-        setErrors({ ...errors, profileImage: 'শুধুমাত্র ছবি ফাইল আপলোড করুন' });
+    if (file.size > 10 * 1024 * 1024) {
+      setErrors({ ...errors, profileImage: 'ফাইলের আকার ১০MB এর বেশি হতে পারবে না' });
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setErrors({ ...errors, profileImage: 'শুধুমাত্র ছবি ফাইল আপলোড করুন' });
+      return;
+    }
+
+    try {
+      const publicKey = process.env.NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY;
+      const urlEndpoint = process.env.NEXT_PUBLIC_IMAGEKIT_URL_ENDPOINT;
+
+      if (!publicKey || !urlEndpoint) {
+        setErrors({ ...errors, profileImage: 'ImageKit কনফিগার করা নেই। প্রশাসকের সাথে যোগাযোগ করুন।' });
+        setImagePreview(null);
+        setNewTeacher(prev => ({ ...prev, profileImage: null }));
         return;
       }
 
       setErrors({ ...errors, profileImage: '' });
+
       const reader = new FileReader();
-      reader.onload = (e) => {
-        setImagePreview(e.target?.result as string);
+      reader.onload = event => {
+        setImagePreview(event.target?.result as string);
       };
       reader.readAsDataURL(file);
-      setNewTeacher({ ...newTeacher, profileImage: file });
+
+      const authResponse = await fetch('/api/imagekit');
+      if (!authResponse.ok) {
+        const authError = await authResponse.json().catch(() => null);
+        console.error('ImageKit auth error:', authError);
+        setErrors({ ...errors, profileImage: authError?.message || 'ImageKit কনফিগার করা নেই। প্রশাসকের সাথে যোগাযোগ করুন।' });
+        setImagePreview(null);
+        setNewTeacher(prev => ({ ...prev, profileImage: null }));
+        return;
+      }
+
+      const authData = await authResponse.json();
+      const settings = await settingsQueries.getSettings();
+      const schoolId = settings?.schoolCode || SCHOOL_ID;
+      const teacherId = newTeacher.employeeId || `teacher-${Date.now()}`;
+      const fileName = `teacher-${teacherId}-${Date.now()}`;
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('fileName', fileName);
+      formData.append('folder', `/school-management/teachers/${schoolId}`);
+      formData.append('tags', `teacher,profile,${schoolId},${teacherId}`);
+      formData.append('publicKey', publicKey);
+      formData.append('token', authData.token);
+      formData.append('expire', authData.expire?.toString() || '');
+      formData.append('signature', authData.signature);
+
+      const uploadResponse = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
+        method: 'POST',
+        body: formData
+      });
+
+      const uploadPayload = await uploadResponse.json().catch(() => null);
+      if (!uploadResponse.ok || !uploadPayload?.url) {
+        console.error('ImageKit upload failed:', uploadPayload);
+        setErrors({ ...errors, profileImage: 'ছবি আপলোড করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।' });
+        setImagePreview(null);
+        setNewTeacher(prev => ({ ...prev, profileImage: null }));
+        return;
+      }
+
+      setNewTeacher(prev => ({
+        ...prev,
+        profileImage: uploadPayload.url as string
+      }));
+      setImagePreview(uploadPayload.url as string);
+    } catch (error) {
+      console.error('❌ Error uploading image:', error);
+      setErrors({ ...errors, profileImage: 'ছবি আপলোড করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।' });
+      setImagePreview(null);
+      setNewTeacher(prev => ({ ...prev, profileImage: null }));
     }
   };
 
@@ -399,6 +499,13 @@ function AddTeacherPage() {
         schoolName: newTeacher.schoolName
       };
 
+      // Add profile image if it was uploaded (should be a string URL after upload)
+      if (newTeacher.profileImage && typeof newTeacher.profileImage === 'string') {
+        teacherData.profileImage = newTeacher.profileImage;
+      }
+
+      console.log('💾 Saving teacher with profileImage:', teacherData.profileImage);
+
       const teacherId = await teacherQueries.createTeacher(teacherData as TeacherUser);
 
       setShowSuccess(true);
@@ -427,17 +534,20 @@ function AddTeacherPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: true },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 

@@ -13,7 +13,7 @@ import {
   Exam,
   ExamSubject
 } from '@/lib/database-queries';
-import { SCHOOL_ID } from '@/lib/constants';
+import { SCHOOL_ID, SCHOOL_NAME } from '@/lib/constants';
 import { useAlert } from '@/hooks/useAlert';
 import AlertDialog from '@/components/ui/alert-dialog';
 import {
@@ -39,6 +39,7 @@ interface CreateSubjectForm {
 function ExamSubjectsPage() {
   const router = useRouter();
   const schoolId = SCHOOL_ID;
+  const schoolName = SCHOOL_NAME;
   const { showSuccess, showError } = useAlert();
 
   // Core data state
@@ -400,6 +401,7 @@ function ExamSubjectsPage() {
           duration: '2 hours',
           venue: 'Main Hall',
           schoolId,
+          schoolName,
           createdBy: 'admin',
           // Add class information for mark entry page compatibility
           className: selectedClass.className,

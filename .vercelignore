@@ -1,0 +1,12 @@
+# Files to ignore during Vercel deployment
+node_modules
+.next
+.env.local
+.env*.local
+*.log
+.DS_Store
+*.pem
+coverage
+.vercel
+tsconfig.tsbuildinfo
+

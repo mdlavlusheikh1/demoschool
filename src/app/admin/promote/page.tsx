@@ -4,14 +4,73 @@ import { useState } from 'react';
 import { doc, updateDoc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
-import { UserPlus, CheckCircle, AlertCircle } from 'lucide-react';
+import { UserPlus, CheckCircle, AlertCircle, Languages } from 'lucide-react';
 
 export default function PromoteUser() {
   const [uid, setUid] = useState('ndrZqsqNWmZ5Hq1fDVYvCNFQKs72');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState<'success' | 'error' | ''>('');
+  const [language, setLanguage] = useState<'bn' | 'en'>('bn');
   const { userData } = useAuth();
+
+  // Content translations
+  const content = {
+    bn: {
+      title: 'সুপার অ্যাডমিন প্রমোশন',
+      subtitle: 'ব্যবহারকারীকে সুপার অ্যাডমিন করুন',
+      uidLabel: 'ব্যবহারকারীর UID',
+      uidPlaceholder: 'ব্যবহারকারীর UID লিখুন',
+      uidHint: 'Firebase Authentication থেকে ব্যবহারকারীর UID কপি করুন',
+      button: 'সুপার অ্যাডমিন করুন',
+      processing: 'প্রসেসিং...',
+      instructions: 'নির্দেশনা:',
+      instruction1: 'Firebase Console → Authentication → Users থেকে ব্যবহারকারীর UID কপি করুন',
+      instruction2: 'উপরের ফিল্ডে UID পেস্ট করুন',
+      instruction3: '"সুপার অ্যাডমিন করুন" বাটনে ক্লিক করুন',
+      instruction4: 'ব্যবহারকারী লগআউট এবং আবার লগইন করলে সুপার অ্যাডমিন অ্যাক্সেস পাবেন',
+      currentUid: 'বর্তমান UID:',
+      errors: {
+        uidRequired: 'UID প্রয়োজন',
+        userNotFound: 'ব্যবহারকারী পাওয়া যায়নি',
+        promotionFailed: 'সুপার অ্যাডমিন করতে ব্যর্থ: ',
+        unknownError: 'অজানা ত্রুটি',
+        accessDenied: 'আপনার এই পেইজে প্রবেশের অনুমতি নেই'
+      },
+      success: {
+        promoted: '✅ সফলভাবে সুপার অ্যাডমিন করা হয়েছে!',
+        previousRole: 'পূর্বের রোল:',
+        newRole: 'নতুন রোল: super_admin'
+      }
+    },
+    en: {
+      title: 'Super Admin Promotion',
+      subtitle: 'Promote user to super admin',
+      uidLabel: 'User UID',
+      uidPlaceholder: 'Enter user UID',
+      uidHint: 'Copy the user UID from Firebase Authentication',
+      button: 'Promote to Super Admin',
+      processing: 'Processing...',
+      instructions: 'Instructions:',
+      instruction1: 'Copy the user UID from Firebase Console → Authentication → Users',
+      instruction2: 'Paste the UID in the field above',
+      instruction3: 'Click the "Promote to Super Admin" button',
+      instruction4: 'User will get super admin access after logging out and logging back in',
+      currentUid: 'Current UID:',
+      errors: {
+        uidRequired: 'UID is required',
+        userNotFound: 'User not found',
+        promotionFailed: 'Failed to promote to super admin: ',
+        unknownError: 'Unknown error',
+        accessDenied: 'You do not have permission to access this page'
+      },
+      success: {
+        promoted: '✅ Successfully promoted to super admin!',
+        previousRole: 'Previous role:',
+        newRole: 'New role: super_admin'
+      }
+    }
+  };
 
   const showMessage = (msg: string, type: 'success' | 'error') => {
     setMessage(msg);
@@ -23,8 +82,10 @@ export default function PromoteUser() {
   };
 
   const promoteToSuperAdmin = async () => {
+    const t = content[language];
+    
     if (!uid.trim()) {
-      showMessage('UID প্রয়োজন', 'error');
+      showMessage(t.errors.uidRequired, 'error');
       return;
     }
 
@@ -35,7 +96,7 @@ export default function PromoteUser() {
       const userDoc = await getDoc(doc(db, 'users', uid));
       
       if (!userDoc.exists()) {
-        showMessage('ব্যবহারকারী পাওয়া যায়নি', 'error');
+        showMessage(t.errors.userNotFound, 'error');
         return;
       }
 
@@ -51,13 +112,13 @@ export default function PromoteUser() {
       });
 
       showMessage(
-        `✅ সফলভাবে সুপার অ্যাডমিন করা হয়েছে!\nপূর্বের রোল: ${currentData.role}\nনতুন রোল: super_admin`,
+        `${t.success.promoted}\n${t.success.previousRole} ${currentData.role}\n${t.success.newRole}`,
         'success'
       );
 
     } catch (error) {
       console.error('Error promoting user:', error);
-      showMessage('সুপার অ্যাডমিন করতে ব্যর্থ: ' + (error instanceof Error ? error.message : 'অজানা ত্রুটি'), 'error');
+      showMessage(t.errors.promotionFailed + (error instanceof Error ? error.message : t.errors.unknownError), 'error');
     } finally {
       setLoading(false);
     }
@@ -68,21 +129,36 @@ export default function PromoteUser() {
     return (
       <div className="p-8 text-center">
         <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
-        <p className="text-red-600">আপনার এই পেইজে প্রবেশের অনুমতি নেই</p>
+        <p className="text-red-600">{content[language].errors.accessDenied}</p>
       </div>
     );
   }
+
+  const t = content[language];
 
   return (
     <div className="p-6 max-w-2xl mx-auto">
       <div className="bg-white rounded-lg border shadow-sm p-8">
         {/* Header */}
         <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-gradient-to-br from-red-600 to-purple-600 rounded-full flex items-center justify-center mx-auto mb-4">
-            <UserPlus className="w-8 h-8 text-white" />
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex-1"></div>
+            <div className="w-16 h-16 bg-gradient-to-br from-red-600 to-purple-600 rounded-full flex items-center justify-center mx-auto">
+              <UserPlus className="w-8 h-8 text-white" />
+            </div>
+            <div className="flex-1 flex justify-end">
+              <button
+                onClick={() => setLanguage(prev => prev === 'bn' ? 'en' : 'bn')}
+                className="flex items-center space-x-2 px-3 py-2 rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors"
+                title={language === 'bn' ? 'Switch to English' : 'বাংলায় পরিবর্তন করুন'}
+              >
+                <Languages className="w-4 h-4 text-gray-600" />
+                <span className="text-sm font-medium text-gray-700">{language === 'bn' ? 'EN' : 'বাং'}</span>
+              </button>
+            </div>
           </div>
-          <h1 className="text-2xl font-bold text-gray-900 mb-2">সুপার অ্যাডমিন প্রমোশন</h1>
-          <p className="text-gray-600">ব্যবহারকারীকে সুপার অ্যাডমিন করুন</p>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">{t.title}</h1>
+          <p className="text-gray-600">{t.subtitle}</p>
         </div>
 
         {/* Message */}
@@ -107,17 +183,17 @@ export default function PromoteUser() {
         <div className="space-y-6">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              ব্যবহারকারীর UID
+              {t.uidLabel}
             </label>
             <input
               type="text"
               value={uid}
               onChange={(e) => setUid(e.target.value)}
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
-              placeholder="ব্যবহারকারীর UID লিখুন"
+              placeholder={t.uidPlaceholder}
             />
             <p className="text-sm text-gray-500 mt-1">
-              Firebase Authentication থেকে ব্যবহারকারীর UID কপি করুন
+              {t.uidHint}
             </p>
           </div>
 
@@ -129,28 +205,28 @@ export default function PromoteUser() {
             {loading ? (
               <div className="flex items-center justify-center">
                 <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
-                প্রসেসিং...
+                {t.processing}
               </div>
             ) : (
-              'সুপার অ্যাডমিন করুন'
+              t.button
             )}
           </button>
         </div>
 
         {/* Instructions */}
         <div className="mt-8 p-4 bg-blue-50 rounded-lg">
-          <h3 className="font-medium text-blue-900 mb-2">নির্দেশনা:</h3>
+          <h3 className="font-medium text-blue-900 mb-2">{t.instructions}</h3>
           <ol className="text-sm text-blue-800 space-y-1 list-decimal list-inside">
-            <li>Firebase Console → Authentication → Users থেকে ব্যবহারকারীর UID কপি করুন</li>
-            <li>উপরের ফিল্ডে UID পেস্ট করুন</li>
-            <li>"সুপার অ্যাডমিন করুন" বাটনে ক্লিক করুন</li>
-            <li>ব্যবহারকারী লগআউট এবং আবার লগইন করলে সুপার অ্যাডমিন অ্যাক্সেস পাবেন</li>
+            <li>{t.instruction1}</li>
+            <li>{t.instruction2}</li>
+            <li>{t.instruction3}</li>
+            <li>{t.instruction4}</li>
           </ol>
         </div>
 
         {/* Current UID Display */}
         <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-          <h4 className="font-medium text-gray-900 mb-2">বর্তমান UID:</h4>
+          <h4 className="font-medium text-gray-900 mb-2">{t.currentUid}</h4>
           <code className="text-sm text-gray-700 bg-white px-2 py-1 rounded border break-all">
             {uid}
           </code>

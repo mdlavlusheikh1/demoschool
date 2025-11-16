@@ -77,10 +77,22 @@ export interface User {
   researchInterests?: string;
   // Additional personal fields
   fatherName?: string;
+  fatherPhone?: string;
+  fatherOccupation?: string;
   motherName?: string;
+  motherPhone?: string;
+  motherOccupation?: string;
   nationalId?: string;
   nidNumber?: string;
   permanentAddress?: string;
+  emergencyContact?: string;
+  emergencyRelation?: string;
+  presentAddress?: string;
+  previousSchool?: string;
+  previousClass?: string;
+  previousSchoolAddress?: string;
+  reasonForLeaving?: string;
+  previousGPA?: string;
 }
 
 // User Management Functions
@@ -92,8 +104,13 @@ export const userQueries = {
     return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
   },
 
-  // Get users by role
+  // Get users by role (only admin and super_admin roles)
   async getUsersByRole(role: string): Promise<User[]> {
+    // Only handle admin and super_admin roles in users collection
+    if (!['admin', 'super_admin'].includes(role)) {
+      return [];
+    }
+
     const q = query(
       collection(db, 'users'),
       where('role', '==', role),
@@ -103,11 +120,12 @@ export const userQueries = {
     return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User));
   },
 
-  // Get users by school
+  // Get users by school (only admin and super_admin roles)
   async getUsersBySchool(schoolId: string): Promise<User[]> {
     const q = query(
       collection(db, 'users'),
       where('schoolId', '==', schoolId),
+      where('role', 'in', ['admin', 'super_admin']),
       orderBy('createdAt', 'desc')
     );
     const snapshot = await getDocs(q);

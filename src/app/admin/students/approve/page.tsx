@@ -73,6 +73,9 @@ function ApproveStudentPage() {
   const [confirmAction, setConfirmAction] = useState<'approve' | 'reject' | null>(null);
   const [confirmStudentId, setConfirmStudentId] = useState<string | null>(null);
   const [confirmStudentName, setConfirmStudentName] = useState<string>('');
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [successType, setSuccessType] = useState<'approve' | 'reject' | null>(null);
   const router = useRouter();
 
   // Load pending students and classes
@@ -183,23 +186,38 @@ function ApproveStudentPage() {
       
       if (confirmAction === 'approve') {
         await studentQueries.approveStudent(confirmStudentId);
-        alert('শিক্ষার্থীর আবেদন সফলভাবে অনুমোদন করা হয়েছে');
+        setSuccessMessage('শিক্ষার্থীর আবেদন সফলভাবে অনুমোদন করা হয়েছে');
+        setSuccessType('approve');
       } else {
         await studentQueries.rejectStudent(confirmStudentId);
-        alert('শিক্ষার্থীর আবেদন বাতিল করা হয়েছে');
+        setSuccessMessage('শিক্ষার্থীর আবেদন সম্পূর্ণভাবে মুছে ফেলা হয়েছে');
+        setSuccessType('reject');
+        
+        // Remove student from local state immediately
+        setPendingStudents(prev => prev.filter(student => student.id !== confirmStudentId));
+        setFilteredStudents(prev => prev.filter(student => student.id !== confirmStudentId));
       }
 
-      // Refresh the list
-      await loadPendingStudents();
-    } catch (error) {
-      console.error(`Error ${confirmAction}ing student:`, error);
-      alert(`শিক্ষার্থী ${confirmAction === 'approve' ? 'অনুমোদন' : 'বাতিল'} করতে ত্রুটি হয়েছে`);
-    } finally {
-      setIsProcessing(false);
+      // Show success modal
+      setShowSuccessModal(true);
+      
+      // Close confirmation modal
       setShowConfirmModal(false);
       setConfirmAction(null);
       setConfirmStudentId(null);
       setConfirmStudentName('');
+      
+      // Refresh the list for approved students
+      if (confirmAction === 'approve') {
+        await loadPendingStudents();
+      }
+    } catch (error) {
+      console.error(`Error ${confirmAction}ing student:`, error);
+      setSuccessMessage(`শিক্ষার্থী ${confirmAction === 'approve' ? 'অনুমোদন' : 'বাতিল'} করতে ত্রুটি হয়েছে`);
+      setSuccessType(null);
+      setShowSuccessModal(true);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -418,55 +436,55 @@ function ApproveStudentPage() {
 
       {/* Confirmation Modal */}
       {showConfirmModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 overflow-hidden">
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden transform transition-all duration-300 scale-100">
             {/* Header with gradient background */}
-            <div className={`p-6 text-white text-center ${
+            <div className={`p-8 text-white text-center ${
               confirmAction === 'approve' 
                 ? 'bg-gradient-to-r from-green-500 to-green-600' 
                 : 'bg-gradient-to-r from-red-500 to-red-600'
             }`}>
-              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
+              <div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-6 backdrop-blur-sm border-2 border-white/30">
                 {confirmAction === 'approve' ? (
-                  <CheckCircle className="w-8 h-8 text-white" />
+                  <CheckCircle className="w-10 h-10 text-white" />
                 ) : (
-                  <XCircle className="w-8 h-8 text-white" />
+                  <XCircle className="w-10 h-10 text-white" />
                 )}
               </div>
-              <h3 className="text-xl font-bold mb-2">
+              <h3 className="text-2xl font-bold mb-3">
                 {confirmAction === 'approve' ? 'অনুমোদন করুন' : 'বাতিল করুন'}
               </h3>
-              <p className="text-white/90 text-sm">
+              <p className="text-white/90 text-base">
                 {confirmAction === 'approve' 
                   ? 'শিক্ষার্থীর আবেদন অনুমোদন করতে চান?' 
-                  : 'শিক্ষার্থীর আবেদন বাতিল করতে চান?'
+                  : 'শিক্ষার্থীর আবেদন সম্পূর্ণভাবে মুছে ফেলতে চান?'
                 }
               </p>
             </div>
 
             {/* Content */}
-            <div className="p-6 text-center">
-              <div className="mb-6">
-                <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4 ${
+            <div className="p-8 text-center">
+              <div className="mb-8">
+                <div className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 ${
                   confirmAction === 'approve' ? 'bg-green-100' : 'bg-red-100'
                 }`}>
-                  <User className={`w-10 h-10 ${
+                  <User className={`w-12 h-12 ${
                     confirmAction === 'approve' ? 'text-green-600' : 'text-red-600'
                   }`} />
                 </div>
-                <h4 className="text-lg font-semibold text-gray-900 mb-2">
+                <h4 className="text-xl font-bold text-gray-900 mb-3">
                   {confirmStudentName}
                 </h4>
-                <p className="text-gray-600 text-sm leading-relaxed">
+                <p className="text-gray-600 text-base leading-relaxed">
                   {confirmAction === 'approve' 
                     ? 'এই শিক্ষার্থীর ভর্তি আবেদন অনুমোদন করা হবে।' 
-                    : 'এই শিক্ষার্থীর ভর্তি আবেদন বাতিল করা হবে।'
+                    : 'এই শিক্ষার্থীর ভর্তি আবেদন সম্পূর্ণভাবে ডেটাবেস থেকে মুছে ফেলা হবে।'
                   }
                 </p>
               </div>
 
               {/* Action Buttons */}
-              <div className="flex space-x-3">
+              <div className="flex space-x-4">
                 <button
                   onClick={() => {
                     setShowConfirmModal(false);
@@ -474,14 +492,14 @@ function ApproveStudentPage() {
                     setConfirmStudentId(null);
                     setConfirmStudentName('');
                   }}
-                  className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 transition-colors"
+                  className="flex-1 px-6 py-3 text-gray-700 bg-gray-100 rounded-xl hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 transition-all duration-200 font-medium"
                 >
                   বাতিল
                 </button>
                 <button
                   onClick={confirmActionHandler}
                   disabled={isProcessing}
-                  className={`flex-1 px-4 py-2 text-white rounded-lg focus:outline-none focus:ring-2 transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none ${
+                  className={`flex-1 px-6 py-3 text-white rounded-xl focus:outline-none focus:ring-2 transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none font-medium ${
                     confirmAction === 'approve'
                       ? 'bg-green-600 hover:bg-green-700 focus:ring-green-500'
                       : 'bg-red-600 hover:bg-red-700 focus:ring-red-500'
@@ -489,7 +507,7 @@ function ApproveStudentPage() {
                 >
                   {isProcessing ? (
                     <div className="flex items-center justify-center space-x-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <Loader2 className="w-5 h-5 animate-spin" />
                       <span>প্রসেসিং...</span>
                     </div>
                   ) : (
@@ -499,10 +517,10 @@ function ApproveStudentPage() {
               </div>
 
               {/* Footer Text */}
-              <p className="text-xs text-gray-500 mt-4">
+              <p className="text-sm text-gray-500 mt-6">
                 {confirmAction === 'approve' 
                   ? 'এই অ্যাকশনটি পূর্বাবস্থায় ফেরানো যাবে না' 
-                  : 'এই অ্যাকশনটি পূর্বাবস্থায় ফেরানো যাবে না'
+                  : 'এই অ্যাকশনটি পূর্বাবস্থায় ফেরানো যাবে না - ডেটা সম্পূর্ণভাবে মুছে যাবে'
                 }
               </p>
             </div>
@@ -736,6 +754,77 @@ function ApproveStudentPage() {
                   )}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Success Modal */}
+      {showSuccessModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden transform transition-all duration-300 scale-100">
+            {/* Header with gradient background */}
+            <div className={`p-8 text-white text-center ${
+              successType === 'approve' 
+                ? 'bg-gradient-to-r from-green-500 to-green-600' 
+                : successType === 'reject'
+                ? 'bg-gradient-to-r from-red-500 to-red-600'
+                : 'bg-gradient-to-r from-gray-500 to-gray-600'
+            }`}>
+              <div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-6 backdrop-blur-sm border-2 border-white/30">
+                {successType === 'approve' ? (
+                  <CheckCircle className="w-10 h-10 text-white" />
+                ) : successType === 'reject' ? (
+                  <XCircle className="w-10 h-10 text-white" />
+                ) : (
+                  <AlertCircle className="w-10 h-10 text-white" />
+                )}
+              </div>
+              <h3 className="text-2xl font-bold mb-3">
+                {successType === 'approve' ? 'অনুমোদন সফল' : 
+                 successType === 'reject' ? 'মুছে ফেলা সফল' : 
+                 'নোটিশ'}
+              </h3>
+            </div>
+
+            {/* Content */}
+            <div className="p-8 text-center">
+              <div className="mb-8">
+                <div className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 ${
+                  successType === 'approve' ? 'bg-green-100' : 
+                  successType === 'reject' ? 'bg-red-100' : 
+                  'bg-gray-100'
+                }`}>
+                  {successType === 'approve' ? (
+                    <CheckCircle className="w-12 h-12 text-green-600" />
+                  ) : successType === 'reject' ? (
+                    <XCircle className="w-12 h-12 text-red-600" />
+                  ) : (
+                    <AlertCircle className="w-12 h-12 text-gray-600" />
+                  )}
+                </div>
+                <p className="text-gray-700 text-base leading-relaxed">
+                  {successMessage}
+                </p>
+              </div>
+
+              {/* Action Button */}
+              <button
+                onClick={() => {
+                  setShowSuccessModal(false);
+                  setSuccessMessage('');
+                  setSuccessType(null);
+                }}
+                className={`w-full px-6 py-3 text-white rounded-xl focus:outline-none focus:ring-2 transition-all duration-200 transform hover:scale-105 font-medium ${
+                  successType === 'approve'
+                    ? 'bg-green-600 hover:bg-green-700 focus:ring-green-500'
+                    : successType === 'reject'
+                    ? 'bg-red-600 hover:bg-red-700 focus:ring-red-500'
+                    : 'bg-gray-600 hover:bg-gray-700 focus:ring-gray-500'
+                }`}
+              >
+                ঠিক আছে
+              </button>
             </div>
           </div>
         </div>

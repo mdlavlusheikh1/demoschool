@@ -2,9 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { auth } from '@/lib/firebase';
 import { User, onAuthStateChanged } from 'firebase/auth';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import { useAuth } from '@/contexts/AuthContext';
 import DeleteConfirmationDialog from '@/components/ui/delete-confirmation-dialog';
 import { classQueries, settingsQueries, Class } from '@/lib/database-queries';
 import {
@@ -34,7 +36,22 @@ import {
   Save,
   X as XIcon,
   CheckCircle,
-  Heart
+  Heart,
+  Globe,
+  FileText,
+  Award,
+  MessageSquare,
+  Gift,
+  Sparkles,
+  AlertCircle,
+  BookOpen as BookOpenIcon,
+  Users as UsersIcon,
+  Wallet,
+  FolderOpen,
+  UserPlus,
+  Wrench,
+  UserCircle,
+  ChevronDown,
 } from 'lucide-react';
 
 function ClassesPage() {
@@ -62,7 +79,15 @@ function ClassesPage() {
   const [deletingClassId, setDeletingClassId] = useState<string>('');
   const [deletingClassName, setDeletingClassName] = useState<string>('');
   const [isDeleting, setIsDeleting] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
   const router = useRouter();
+  const { userData } = useAuth();
+
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
 
   useEffect(() => {
     if (!auth) {
@@ -112,7 +137,7 @@ function ClassesPage() {
       const timestamp = new Date().getTime();
       console.log(`🔄 Loading classes at ${timestamp}`);
 
-      const schoolId = settings?.schoolCode || 'IQRA-2025'; // Use school ID from settings
+      const schoolId = settings?.schoolCode || 'AMAR-2026'; // Use school ID from settings
       const classesData = await classQueries.getClassesBySchool(schoolId); // Load classes for specific school
       setClasses(classesData);
 
@@ -210,7 +235,7 @@ function ClassesPage() {
     try {
       const classData = {
         ...formData,
-        schoolId: settings?.schoolCode || 'IQRA-2025',
+        schoolId: settings?.schoolCode || 'AMAR-2026',
         schoolName: settings?.schoolName || 'আমার স্কুল',
         classId: editingClass?.classId || ''
       };
@@ -253,17 +278,20 @@ function ClassesPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: true },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Heart, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -353,10 +381,101 @@ function ClassesPage() {
                   />
                 </div>
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">
-                    {user?.email?.charAt(0).toUpperCase()}
-                  </span>
+                
+                {/* User Profile Dropdown */}
+                <div className="relative">
+                  <button
+                    onClick={() => setShowUserMenu(!showUserMenu)}
+                    className="flex items-center space-x-2 hover:bg-gray-100 rounded-lg p-2 transition-colors"
+                  >
+                    <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                      {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                        <img
+                          src={(userData as any)?.photoURL || user?.photoURL || ''}
+                          alt="Profile"
+                          className="w-full h-full object-cover"
+                          onError={() => {
+                            setImageError(true);
+                          }}
+                        />
+                      ) : (
+                        <span className="text-white font-medium text-sm">
+                          {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                        </span>
+                      )}
+                    </div>
+                    <ChevronDown className="w-4 h-4 text-gray-600" />
+                  </button>
+
+                  {showUserMenu && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-10"
+                        onClick={() => setShowUserMenu(false)}
+                      ></div>
+                      <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-lg border border-gray-200 z-20">
+                        <div className="p-4 border-b border-gray-200">
+                          <div className="flex items-center space-x-3">
+                            <div className="w-12 h-12 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                              {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                                <img
+                                  src={(userData as any)?.photoURL || user?.photoURL || ''}
+                                  alt="Profile"
+                                  className="w-full h-full object-cover"
+                                  onError={() => {
+                                    setImageError(true);
+                                  }}
+                                />
+                              ) : (
+                                <span className="text-white font-medium">
+                                  {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-gray-900 truncate">
+                                {(userData as any)?.name || user?.displayName || user?.email?.split('@')[0] || 'অ্যাডমিন'}
+                              </p>
+                              <p className="text-xs text-gray-500 truncate">
+                                {user?.email || (userData as any)?.email || ''}
+                              </p>
+                              <span className="inline-block mt-1 px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-800 rounded">
+                                {(userData as any)?.role === 'super_admin' ? 'সুপার অ্যাডমিন' : 'অ্যাডমিন'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="py-1">
+                          <Link
+                            href="/admin/profile"
+                            onClick={() => setShowUserMenu(false)}
+                            className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                          >
+                            <UserCircle className="w-4 h-4 mr-3" />
+                            প্রোফাইল
+                          </Link>
+                          <Link
+                            href="/admin/settings"
+                            onClick={() => setShowUserMenu(false)}
+                            className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                          >
+                            <Settings className="w-4 h-4 mr-3" />
+                            সেটিংস
+                          </Link>
+                          <button
+                            onClick={() => {
+                              setShowUserMenu(false);
+                              auth.signOut();
+                            }}
+                            className="flex items-center w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                          >
+                            <LogOut className="w-4 h-4 mr-3" />
+                            লগআউট
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -444,7 +563,7 @@ function ClassesPage() {
                         <Building className="w-4 h-4 mr-2 text-indigo-500" />
                         <span className="font-medium">স্কুল আইডি:</span>
                         <span className="ml-1 text-indigo-600 font-bold bg-indigo-50 px-2 py-1 rounded text-xs">
-                          {settings?.schoolCode || 'IQRA-2025'}
+                          {settings?.schoolCode || 'AMAR-2026'}
                         </span>
                       </div>
                       <div className="flex items-center text-sm text-gray-600">
@@ -638,6 +757,45 @@ function ClassesPage() {
 }
 
 export default function ClassesPageWrapper() {
+  const { userData, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    // Block unauthorized access - only admin and super_admin can access
+    if (!loading && userData?.role) {
+      const role = userData.role;
+      
+      if (role === 'teacher') {
+        router.push('/teacher/classes');
+        return;
+      }
+      
+      if (role === 'parent') {
+        router.push('/parent/dashboard');
+        return;
+      }
+      
+      if (role === 'student') {
+        router.push('/student/dashboard');
+        return;
+      }
+      
+      // Only allow admin and super_admin
+      if (role !== 'admin' && role !== 'super_admin') {
+        router.push('/');
+        return;
+      }
+    }
+  }, [userData, loading, router]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
   return (
     <ProtectedRoute requireAuth={true}>
       <ClassesPage />

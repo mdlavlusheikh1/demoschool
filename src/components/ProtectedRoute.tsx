@@ -10,18 +10,31 @@ interface ProtectedRouteProps {
 }
 
 export default function ProtectedRoute({ children, requireAuth = true }: ProtectedRouteProps) {
-  const { user, loading } = useAuth();
+  const { user, userData, loading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (!loading) {
+    // Wait for both auth and userData to be loaded before any redirects
+    if (!loading && userData) {
       if (requireAuth && !user) {
         router.push('/auth/login');
       } else if (!requireAuth && user) {
-        router.push('/admin/dashboard');
+        // Redirect based on user role
+        const roleRoutes: Record<string, string> = {
+          'super_admin': '/super-admin/dashboard',
+          'admin': '/admin/dashboard',
+          'teacher': '/teacher/dashboard',
+          'parent': '/parent/dashboard',
+          'student': '/student/dashboard',
+        };
+        const redirectRoute = roleRoutes[userData.role] || '/admin/dashboard';
+        router.push(redirectRoute);
       }
+    } else if (!loading && !userData && requireAuth && !user) {
+      // If no userData and no user, redirect to login
+      router.push('/auth/login');
     }
-  }, [user, loading, requireAuth, router]);
+  }, [user, userData, loading, requireAuth, router]);
 
   if (loading) {
     return (

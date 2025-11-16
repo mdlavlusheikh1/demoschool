@@ -20,6 +20,7 @@ NEXT_PUBLIC_FIREBASE_DATABASE_URL=https://your-project-default-rtdb.firebaseio.c
 
 # ImageKit Configuration (optional)
 NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY=your-imagekit-public-key
+IMAGEKIT_PRIVATE_KEY=your-imagekit-private-key
 NEXT_PUBLIC_IMAGEKIT_URL_ENDPOINT=https://ik.imagekit.io/your-imagekit-id
 ```
 
@@ -48,13 +49,52 @@ Replace the placeholder values in `.env.local` with your actual Firebase configu
 After creating the `.env.local` file, restart your development server:
 
 ```bash
+> npm run dev
+```
+
+## ImageKit Setup (For Image Upload Feature)
+
+If you want to use the image upload feature for student photos, you need to configure ImageKit:
+
+### Step 1: Create ImageKit Account
+
+1. Go to [ImageKit.io](https://imagekit.io/)
+2. Sign up for a free account
+3. Create a new project
+4. Go to your dashboard and find the API keys
+
+### Step 2: Get ImageKit Credentials
+
+From your ImageKit dashboard:
+
+1. Go to **Settings** → **API Keys**
+2. Copy the **Public Key** (this will be `NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY`)
+3. Copy the **Private Key** (this will be `IMAGEKIT_PRIVATE_KEY`)
+4. Copy the **URL Endpoint** (this will be `NEXT_PUBLIC_IMAGEKIT_URL_ENDPOINT`)
+
+### Step 3: Update .env.local file
+
+Add these lines to your `.env.local` file:
+
+```env
+# ImageKit Configuration
+NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY=your-copied-public-key
+IMAGEKIT_PRIVATE_KEY=your-copied-private-key
+NEXT_PUBLIC_IMAGEKIT_URL_ENDPOINT=https://ik.imagekit.io/your-imagekit-id
+```
+
+### Step 4: Replace placeholder values
+
+Replace the placeholder values with your actual ImageKit credentials.
+
+### Step 5: Restart the development server
+
+```bash
 npm run dev
 ```
 
-## Current Status
+## Note
 
-The application has been updated with error handling to prevent 500 errors when Firebase is not properly configured. However, for full functionality, you need to set up the Firebase environment variables as described above.
-
-## Demo Mode
-
-If you don't have Firebase configured yet, the application will run in demo mode with limited functionality, but it won't crash with 500 errors.
+- ImageKit is optional - if not configured, the image upload feature will show an error but won't break the application
+- The application will work without ImageKit, but student photo uploads won't function
+- You can add ImageKit configuration later without affecting other features

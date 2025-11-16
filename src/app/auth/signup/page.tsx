@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
+import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { auth, db } from '@/lib/firebase';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Eye, EyeOff, ArrowLeft, User, School, Phone, MapPin } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import { SCHOOL_ID, SCHOOL_NAME } from '@/lib/constants';
 
 interface SignUpData {
   name: string;
@@ -34,7 +35,7 @@ function SignUpPage() {
     phone: '',
     role: 'student',
     schoolId: 'school-abc-123', // Default school ID
-    schoolName: 'আমার স্কুল',
+    schoolName: '',
     address: '',
     guardianName: '',
     guardianPhone: '',
@@ -49,6 +50,39 @@ function SignUpPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const router = useRouter();
+
+  // Load school name from settings
+  useEffect(() => {
+    const loadSchoolSettings = async () => {
+      try {
+        const { settingsQueries } = await import('@/lib/database-queries');
+        const settings = await settingsQueries.getSettings();
+        if (settings?.schoolName) {
+          setFormData(prev => ({
+            ...prev,
+            schoolName: settings.schoolName,
+            schoolId: settings.schoolCode || SCHOOL_ID
+          }));
+        } else {
+          // Use constants as fallback
+          setFormData(prev => ({
+            ...prev,
+            schoolName: SCHOOL_NAME,
+            schoolId: SCHOOL_ID
+          }));
+        }
+      } catch (error) {
+        console.error('Error loading school settings:', error);
+        // Use constants as fallback
+        setFormData(prev => ({
+          ...prev,
+          schoolName: SCHOOL_NAME,
+          schoolId: SCHOOL_ID
+        }));
+      }
+    };
+    loadSchoolSettings();
+  }, []);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -117,6 +151,12 @@ function SignUpPage() {
       console.log('User created in Firebase Auth:', user.uid);
 
       // Create user document in Firestore
+      // Admin and teacher roles need approval (isActive: false)
+      // Student and parent can login immediately (isActive: true)
+      // Super admin should NOT be created through signup - they are created manually
+      // But if someone tries, they also need approval
+      const needsApproval = formData.role === 'admin' || formData.role === 'teacher' || formData.role === 'super_admin';
+      
       const userData = {
         uid: user.uid,
         name: formData.name,
@@ -126,7 +166,7 @@ function SignUpPage() {
         schoolId: formData.schoolId,
         schoolName: formData.schoolName,
         address: formData.address,
-        isActive: false, // Admin needs to activate account
+        isActive: !needsApproval, // Admin and teacher need approval, student/parent are auto-activated
         profileImage: '',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -143,12 +183,26 @@ function SignUpPage() {
       await setDoc(doc(db, 'users', user.uid), userData);
       console.log('User data saved successfully!');
 
-      setSuccess(`অ্যাকাউন্ট সফলভাবে তৈরি হয়েছে! UID: ${user.uid} - অ্যাডমিন অনুমোদনের জন্য অপেক্ষা করুন।`);
-      
-      // Small delay to show success message before redirect
-      setTimeout(() => {
-        router.push('/auth/login');
-      }, 2000);
+      // Sign out the user immediately after account creation
+      // Firebase automatically logs in the user, but we want them to wait for approval if needed
+      await signOut(auth);
+      console.log('User signed out after account creation');
+
+      if (needsApproval) {
+        setSuccess(`অ্যাকাউন্ট সফলভাবে তৈরি হয়েছে! অনুগ্রহ করে অনুমোদনের জন্য অপেক্ষা করুন। সুপার অ্যাডমিন অনুমোদনের পর আপনি লগইন করতে পারবেন।`);
+        
+        // Redirect to home page after showing message
+        setTimeout(() => {
+          router.push('/');
+        }, 4000); // 4 seconds to read the message
+      } else {
+        setSuccess(`অ্যাকাউন্ট সফলভাবে তৈরি হয়েছে! এখনই লগইন করতে পারেন।`);
+        
+        // Redirect to home page, they can login from there
+        setTimeout(() => {
+          router.push('/');
+        }, 3000); // 3 seconds to read the message
+      }
 
     } catch (error: any) {
       console.error('Sign up error:', error);

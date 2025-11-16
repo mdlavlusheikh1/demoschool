@@ -2,12 +2,16 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { auth } from '@/lib/firebase';
-import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
-import { collection, onSnapshot, query, orderBy, where } from 'firebase/firestore';
+import { User as AuthUser, onAuthStateChanged, createUserWithEmailAndPassword } from 'firebase/auth';
+import { collection, onSnapshot, query, orderBy, where, getDocs, doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { SCHOOL_ID, SCHOOL_NAME } from '@/lib/constants';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { teacherQueries, User as TeacherUser } from '@/lib/database-queries';
+import { useAuth } from '@/contexts/AuthContext';
+import { teacherQueries, User as TeacherUser, settingsQueries } from '@/lib/database-queries';
+import { exportTeachersToPDF, exportTeachersToExcel, exportSingleTeacherToPDF } from '@/lib/export-utils';
 import {
   Home,
   Users,
@@ -33,7 +37,21 @@ import {
   Phone,
   Package,
   RefreshCw,
-  AlertCircle
+  AlertCircle,
+  Globe,
+  FileText,
+  Award,
+  MessageSquare,
+  Gift,
+  Sparkles,
+  BookOpen as BookOpenIcon,
+  Users as UsersIcon,
+  Download,
+  FileDown,
+  Loader2,
+  CheckCircle,
+  UserCircle,
+  ChevronDown,
 } from 'lucide-react';
 
 function TeachersPage() {
@@ -53,13 +71,34 @@ function TeachersPage() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [teacherToDelete, setTeacherToDelete] = useState<TeacherUser | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [schoolLogo, setSchoolLogo] = useState<string>('');
+  const [schoolSettings, setSchoolSettings] = useState<any>(null);
+  const [showSuccessMessage, setShowSuccessMessage] = useState(false);
+  const [showErrorMessage, setShowErrorMessage] = useState(false);
+  const [messageText, setMessageText] = useState('');
+  const [imageError, setImageError] = useState(false);
+  const [creatingTeacher, setCreatingTeacher] = useState<string | null>(null);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [notification, setNotification] = useState<{ show: boolean; message: string; type: 'success' | 'error' }>({
+    show: false,
+    message: '',
+    type: 'success'
+  });
   const router = useRouter();
+  const { userData } = useAuth();
+
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUser(user);
         loadTeachers();
+        loadSchoolSettings();
       } else {
         router.push('/auth/login');
       }
@@ -69,31 +108,108 @@ function TeachersPage() {
     return () => unsubscribe();
   }, [router]);
 
+  // Load school settings
+  const loadSchoolSettings = async () => {
+    try {
+      const settings = await settingsQueries.getSettings();
+      setSchoolSettings(settings);
+      if ((settings as any)?.schoolLogo) {
+        setSchoolLogo((settings as any).schoolLogo);
+      } else if ((settings as any)?.websiteLogo) {
+        setSchoolLogo((settings as any).websiteLogo);
+      }
+    } catch (error) {
+      console.error('Error loading school settings:', error);
+    }
+  };
+
   // Real-time listener for teachers
   useEffect(() => {
     if (!user) return;
 
     setTeachersLoading(true);
-    const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'teacher'),
+    
+    // Try to query from teachers collection first (where they're actually stored)
+    let teachersUnsubscribe: (() => void) | null = null;
+    
+    const loadFromUsersCollection = () => {
+      console.log('🔄 Falling back to users collection...');
+      const fallbackQuery = query(
+        collection(db, 'users'),
+        where('role', '==', 'teacher')
+      );
+      
+      teachersUnsubscribe = onSnapshot(fallbackQuery, (snapshot) => {
+        const fallbackTeachers = snapshot.docs.map(doc => ({
+          uid: doc.id,
+          ...doc.data()
+        } as TeacherUser));
+        setTeachers(fallbackTeachers);
+        setTeachersLoading(false);
+        console.log('✅ Teachers loaded from users collection (fallback):', fallbackTeachers.length);
+      }, (fallbackError) => {
+        console.error('❌ Error loading teachers from users collection:', fallbackError);
+        setError('শিক্ষক লোড করতে সমস্যা হয়েছে');
+        setTeachersLoading(false);
+      });
+    };
+    
+    // Try with orderBy first
+    const q1 = query(
+      collection(db, 'teachers'),
+      where('isActive', '==', true),
       orderBy('createdAt', 'desc')
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    teachersUnsubscribe = onSnapshot(q1, (snapshot) => {
       const teachersData = snapshot.docs.map(doc => ({
         uid: doc.id,
         ...doc.data()
       } as TeacherUser));
       setTeachers(teachersData);
       setTeachersLoading(false);
-    }, (error) => {
-      console.error('Error loading teachers:', error);
-      setError('শিক্ষক লোড করতে সমস্যা হয়েছে');
-      setTeachersLoading(false);
+      console.log('✅ Teachers loaded from teachers collection:', teachersData.length);
+    }, (error: any) => {
+      console.error('❌ Error loading teachers from teachers collection:', error);
+      
+      // If orderBy fails (missing index), try without orderBy
+      if (error.code === 'failed-precondition' || error.message?.includes('index')) {
+        console.log('⚠️ Index error, trying without orderBy...');
+        const q2 = query(
+          collection(db, 'teachers'),
+          where('isActive', '==', true)
+        );
+        
+        teachersUnsubscribe = onSnapshot(q2, (snapshot) => {
+          const teachersData = snapshot.docs.map(doc => ({
+            uid: doc.id,
+            ...doc.data()
+          } as TeacherUser));
+          // Sort manually
+          teachersData.sort((a, b) => {
+            const dateA = a.createdAt?.toMillis?.() || 0;
+            const dateB = b.createdAt?.toMillis?.() || 0;
+            return dateB - dateA;
+          });
+          setTeachers(teachersData);
+          setTeachersLoading(false);
+          console.log('✅ Teachers loaded from teachers collection (no orderBy):', teachersData.length);
+        }, (error2) => {
+          console.error('❌ Error loading teachers (no orderBy):', error2);
+          // Fallback: try users collection
+          loadFromUsersCollection();
+        });
+      } else {
+        // Other error - fallback to users collection
+        loadFromUsersCollection();
+      }
     });
 
-    return () => unsubscribe();
+    return () => {
+      if (teachersUnsubscribe) {
+        teachersUnsubscribe();
+      }
+    };
   }, [user]);
 
   const loadTeachers = async () => {
@@ -103,11 +219,73 @@ function TeachersPage() {
     setError('');
 
     try {
-      const teachersData = await teacherQueries.getAllTeachers();
+      // Query from teachers collection first (where they're actually stored)
+      let teachersData: TeacherUser[] = [];
+      
+      try {
+        // Try with orderBy first
+        const teachersQuery = query(
+          collection(db, 'teachers'),
+          where('isActive', '==', true),
+          orderBy('createdAt', 'desc')
+        );
+        const snapshot = await getDocs(teachersQuery);
+        teachersData = snapshot.docs.map(doc => ({
+          uid: doc.id,
+          ...doc.data()
+        } as TeacherUser));
+      } catch (error: any) {
+        // If orderBy fails (missing index), try without it
+        if (error.code === 'failed-precondition' || error.message?.includes('index')) {
+          console.log('⚠️ Index error, trying without orderBy...');
+          const teachersQuery = query(
+            collection(db, 'teachers'),
+            where('isActive', '==', true)
+          );
+          const snapshot = await getDocs(teachersQuery);
+          teachersData = snapshot.docs.map(doc => ({
+            uid: doc.id,
+            ...doc.data()
+          } as TeacherUser));
+          
+          // Sort manually
+          teachersData.sort((a, b) => {
+            const dateA = a.createdAt?.toMillis?.() || 0;
+            const dateB = b.createdAt?.toMillis?.() || 0;
+            return dateB - dateA;
+          });
+        } else {
+          throw error;
+        }
+      }
+      
+      // If no teachers found, try users collection as fallback
+      if (teachersData.length === 0) {
+        console.log('No teachers in teachers collection, trying users collection...');
+        const fallbackQuery = query(
+          collection(db, 'users'),
+          where('role', '==', 'teacher')
+        );
+        const fallbackSnapshot = await getDocs(fallbackQuery);
+        teachersData = fallbackSnapshot.docs.map(doc => ({
+          uid: doc.id,
+          ...doc.data()
+        } as TeacherUser));
+      }
+      
       setTeachers(teachersData);
+      console.log('✅ Loaded teachers:', teachersData.length);
     } catch (error) {
       console.error('Error loading teachers:', error);
-      setError('শিক্ষক লোড করতে সমস্যা হয়েছে');
+      // Final fallback to teacherQueries
+      try {
+        const fallbackTeachers = await teacherQueries.getAllTeachers();
+        setTeachers(fallbackTeachers);
+        console.log('✅ Fallback loaded teachers:', fallbackTeachers.length);
+      } catch (fallbackError) {
+        console.error('Fallback also failed:', fallbackError);
+        setError('শিক্ষক লোড করতে সমস্যা হয়েছে');
+      }
     } finally {
       setTeachersLoading(false);
     }
@@ -161,6 +339,315 @@ function TeachersPage() {
     setTeacherToDelete(null);
   };
 
+  // Create teacher account function
+  const handleCreateTeacherAccount = async (teacher: TeacherUser) => {
+    if (!teacher || !teacher.uid) {
+      setNotification({
+        show: true,
+        message: 'শিক্ষক তথ্য পাওয়া যায়নি',
+        type: 'error'
+      });
+      setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 3000);
+      return;
+    }
+
+    const teacherName = teacher.displayName || teacher.name || '';
+    const teacherEmail = (teacher.email || '').trim().toLowerCase();
+    const teacherPhone = teacher.phoneNumber || teacher.phone || '';
+
+    if (!teacherName || !teacherEmail) {
+      setNotification({
+        show: true,
+        message: 'শিক্ষকের নাম এবং ইমেইল প্রয়োজন',
+        type: 'error'
+      });
+      setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 3000);
+      return;
+    }
+
+    if (!teacherPhone) {
+      setNotification({
+        show: true,
+        message: 'শিক্ষকের ফোন নম্বর প্রয়োজন',
+        type: 'error'
+      });
+      setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 3000);
+      return;
+    }
+
+    setCreatingTeacher(teacher.uid);
+
+    try {
+      // Clean phone number first (remove any non-digit characters)
+      const cleanPhone = teacherPhone.replace(/\D/g, ''); // Remove non-digits
+      
+      // Validate that we have a valid phone number for password
+      if (!cleanPhone || cleanPhone.length < 10) {
+        setNotification({
+          show: true,
+          message: 'শিক্ষকের সঠিক ফোন নম্বর প্রয়োজন (কমপক্ষে ১০ সংখ্যা)',
+          type: 'error'
+        });
+        setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 3000);
+        setCreatingTeacher(null);
+        return;
+      }
+      
+      const password = cleanPhone; // Use cleaned phone number as password
+
+      // Check if teacher account already exists by email
+      const existingTeacherByEmailQuery = query(
+        collection(db, 'users'),
+        where('email', '==', teacherEmail),
+        where('role', '==', 'teacher')
+      );
+      const existingTeacherByEmailSnapshot = await getDocs(existingTeacherByEmailQuery);
+
+      if (!existingTeacherByEmailSnapshot.empty) {
+        // Teacher login already exists
+        const existingTeacher = existingTeacherByEmailSnapshot.docs[0].data();
+        setNotification({
+          show: true,
+          message: `এই শিক্ষকের লগইন ইতিমধ্যে তৈরি আছে! ইমেইল: ${teacherEmail}, পাসওয়ার্ড: ${password}`,
+          type: 'success'
+        });
+        setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 8000);
+        setCreatingTeacher(null);
+        return;
+      }
+
+      // Check if email already exists in Firebase Auth
+      try {
+        // Validate password before creating account
+        if (!password || password.length < 6) {
+          setNotification({
+            show: true,
+            message: 'পাসওয়ার্ড তৈরি করতে সমস্যা হয়েছে। শিক্ষকের ফোন নম্বর যাচাই করুন।',
+            type: 'error'
+          });
+          setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 3000);
+          setCreatingTeacher(null);
+          return;
+        }
+        
+        // Create Firebase Auth account (this will automatically sign in the new user)
+        const userCredential = await createUserWithEmailAndPassword(auth, teacherEmail, password);
+        const teacherUid = userCredential.user.uid;
+
+        // Get school settings (with fallback)
+        const schoolId = (schoolSettings && schoolSettings.schoolCode) ? schoolSettings.schoolCode : SCHOOL_ID;
+        const schoolName = (schoolSettings && schoolSettings.schoolName) ? schoolSettings.schoolName : SCHOOL_NAME;
+
+        // Create teacher document in Firestore users collection
+        const teacherData = {
+          uid: teacherUid,
+          name: teacherName,
+          displayName: teacherName,
+          email: teacherEmail,
+          phone: teacherPhone,
+          phoneNumber: teacherPhone,
+          role: 'teacher' as const,
+          schoolId: schoolId,
+          schoolName: schoolName,
+          isActive: true,
+          isApproved: true,
+          // Copy other teacher data from teachers collection
+          subject: teacher.subject || '',
+          qualification: teacher.qualification || '',
+          experience: teacher.experience || '',
+          department: teacher.department || '',
+          designation: teacher.designation || '',
+          address: teacher.address || '',
+          profileImage: teacher.profileImage || '',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        };
+
+        await setDoc(doc(db, 'users', teacherUid), teacherData);
+
+        // Also update the teacher document in teachers collection to link the auth account
+        if (teacher.uid) {
+          try {
+            const teacherRef = doc(db, 'teachers', teacher.uid);
+            const teacherDoc = await getDoc(teacherRef);
+            if (teacherDoc.exists()) {
+              await setDoc(teacherRef, {
+                authUid: teacherUid,
+                hasLogin: true,
+                updatedAt: serverTimestamp()
+              }, { merge: true });
+            }
+          } catch (updateError) {
+            console.warn('Error updating teacher document (non-critical):', updateError);
+            // This is non-critical - the account was created successfully
+          }
+        }
+
+        // Immediately sign out the newly created teacher user
+        // This prevents redirect to teacher panel and keeps admin logged in
+        try {
+          await auth.signOut();
+        } catch (signOutError) {
+          console.warn('Error signing out teacher user (non-critical):', signOutError);
+          // This is non-critical - the account was created successfully
+        }
+
+        // Show success notification with credentials
+        setNotification({
+          show: true,
+          message: `শিক্ষক লগইন সফলভাবে তৈরি হয়েছে! ইমেইল: ${teacherEmail}, পাসওয়ার্ড: ${password}`,
+          type: 'success'
+        });
+        setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 8000);
+      } catch (authError: any) {
+        console.error('Auth error creating teacher account:', authError);
+        if (authError?.code === 'auth/email-already-in-use') {
+          setNotification({
+            show: true,
+            message: 'এই ইমেইল দিয়ে ইতিমধ্যে একটি অ্যাকাউন্ট রয়েছে',
+            type: 'error'
+          });
+          setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 5000);
+        } else {
+          // Re-throw to be caught by outer catch block
+          throw authError;
+        }
+      }
+    } catch (error: any) {
+      console.error('Error creating teacher account:', error);
+      const errorMessage = error?.message || error?.toString() || 'অজানা ত্রুটি';
+      setNotification({
+        show: true,
+        message: `শিক্ষক লগইন তৈরি করতে সমস্যা হয়েছে: ${errorMessage}`,
+        type: 'error'
+      });
+      setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 5000);
+    } finally {
+      setCreatingTeacher(null);
+    }
+  };
+
+  // Download single teacher information
+  const handleDownloadTeacher = async (teacher: TeacherUser) => {
+    setIsExporting(true);
+    try {
+      const teacherData = {
+        name: teacher.name || teacher.displayName || '-',
+        displayName: teacher.displayName || teacher.name || '-',
+        email: teacher.email || '-',
+        phoneNumber: teacher.phoneNumber || teacher.phone || '-',
+        phone: teacher.phone || teacher.phoneNumber || '-',
+        dateOfBirth: teacher.dateOfBirth || '-',
+        gender: teacher.gender || '-',
+        maritalStatus: (teacher as any).maritalStatus || '-',
+        nationality: (teacher as any).nationality || '-',
+        religion: (teacher as any).religion || '-',
+        bloodGroup: (teacher as any).bloodGroup || '-',
+        fatherName: (teacher as any).fatherName || '-',
+        motherName: (teacher as any).motherName || '-',
+        nationalId: (teacher as any).nationalId || '-',
+        address: teacher.address || '-',
+        presentAddress: (teacher as any).presentAddress || teacher.address || '-',
+        permanentAddress: (teacher as any).permanentAddress || '-',
+        city: (teacher as any).city || '-',
+        district: (teacher as any).district || '-',
+        postalCode: (teacher as any).postalCode || '-',
+        country: (teacher as any).country || '-',
+        teacherId: (teacher as any).teacherId || (teacher as any).employeeId || teacher.uid || '-',
+        employeeId: (teacher as any).employeeId || (teacher as any).teacherId || '-',
+        subject: teacher.subject || '-',
+        class: teacher.class || '-',
+        qualification: teacher.qualification || '-',
+        experience: teacher.experience || '-',
+        specialization: (teacher as any).specialization || '-',
+        department: teacher.department || '-',
+        designation: teacher.designation || '-',
+        joinDate: teacher.joinDate || '-',
+        salary: (teacher as any).salary || '-',
+        employmentType: (teacher as any).employmentType || '-',
+        emergencyContactName: (teacher as any).emergencyContactName || '-',
+        emergencyContactPhone: (teacher as any).emergencyContactPhone || '-',
+        emergencyContactRelation: (teacher as any).emergencyContactRelation || '-',
+        languages: (teacher as any).languages || '-',
+        skills: (teacher as any).skills || '-',
+        achievements: (teacher as any).achievements || '-',
+        publications: (teacher as any).publications || '-',
+        researchInterests: (teacher as any).researchInterests || '-',
+        isActive: teacher.isActive !== false,
+        profileImage: (teacher as any).profileImage || teacher.profileImage || '',
+      };
+      await exportSingleTeacherToPDF(teacherData, schoolLogo, schoolSettings);
+      
+      setShowSuccessMessage(true);
+      setMessageText(`${teacher.name || teacher.displayName || 'শিক্ষক'}-এর তথ্য PDF-এ ডাউনলোড হয়েছে`);
+      setTimeout(() => setShowSuccessMessage(false), 3000);
+    } catch (error: any) {
+      setShowErrorMessage(true);
+      setMessageText(error.message || 'PDF ডাউনলোড করা যায়নি');
+      setTimeout(() => setShowErrorMessage(false), 3000);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Convert teachers to export format
+  const convertTeachersForExport = (teachers: TeacherUser[]) => {
+    return teachers.map(teacher => ({
+      name: teacher.name || teacher.displayName || '-',
+      teacherId: (teacher as any).teacherId || teacher.uid || '-',
+      email: teacher.email || '-',
+      phoneNumber: teacher.phoneNumber || teacher.phone || '-',
+      subject: (teacher as any).subject || '-',
+      class: (teacher as any).class || '-',
+      experience: (teacher as any).experience || '-',
+      qualification: (teacher as any).qualification || '-',
+      address: teacher.address || '-',
+      dateOfBirth: teacher.dateOfBirth || '-',
+      isActive: teacher.isActive !== false,
+      createdAt: teacher.createdAt?.toDate?.().toLocaleDateString('bn-BD') || '-',
+    }));
+  };
+
+  // Export to PDF
+  const handleExportPDF = async () => {
+    setIsExporting(true);
+    try {
+      const exportData = convertTeachersForExport(filteredTeachers);
+      const currentDate = new Date().toISOString().split('T')[0];
+      await exportTeachersToPDF(exportData, `teachers_report_${currentDate}.pdf`, schoolLogo, schoolSettings);
+      
+      setShowSuccessMessage(true);
+      setMessageText('PDF সফলভাবে ডাউনলোড হয়েছে');
+      setTimeout(() => setShowSuccessMessage(false), 3000);
+    } catch (error: any) {
+      setShowErrorMessage(true);
+      setMessageText(error.message || 'PDF ডাউনলোড করা যায়নি');
+      setTimeout(() => setShowErrorMessage(false), 3000);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Export to Excel
+  const handleExportExcel = () => {
+    setIsExporting(true);
+    try {
+      const exportData = convertTeachersForExport(filteredTeachers);
+      const currentDate = new Date().toISOString().split('T')[0];
+      exportTeachersToExcel(exportData, `teachers_report_${currentDate}.xlsx`);
+      
+      setShowSuccessMessage(true);
+      setMessageText('Excel সফলভাবে ডাউনলোড হয়েছে');
+      setTimeout(() => setShowSuccessMessage(false), 3000);
+    } catch (error: any) {
+      setShowErrorMessage(true);
+      setMessageText(error.message || 'Excel ডাউনলোড করা যায়নি');
+      setTimeout(() => setShowErrorMessage(false), 3000);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   // Enhanced search and filter logic
   const filteredTeachers = teachers.filter(teacher => {
     // Text search - search in multiple fields
@@ -202,17 +689,20 @@ function TeachersPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: true },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -304,10 +794,101 @@ function TeachersPage() {
                   />
                 </div>
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">
-                    {user?.email?.charAt(0).toUpperCase()}
-                  </span>
+                
+                {/* User Profile Dropdown */}
+                <div className="relative">
+                  <button
+                    onClick={() => setShowUserMenu(!showUserMenu)}
+                    className="flex items-center space-x-2 hover:bg-gray-100 rounded-lg p-2 transition-colors"
+                  >
+                    <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                      {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                        <img
+                          src={(userData as any)?.photoURL || user?.photoURL || ''}
+                          alt="Profile"
+                          className="w-full h-full object-cover"
+                          onError={() => {
+                            setImageError(true);
+                          }}
+                        />
+                      ) : (
+                        <span className="text-white font-medium text-sm">
+                          {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                        </span>
+                      )}
+                    </div>
+                    <ChevronDown className="w-4 h-4 text-gray-600" />
+                  </button>
+
+                  {showUserMenu && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-10"
+                        onClick={() => setShowUserMenu(false)}
+                      ></div>
+                      <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-lg border border-gray-200 z-20">
+                        <div className="p-4 border-b border-gray-200">
+                          <div className="flex items-center space-x-3">
+                            <div className="w-12 h-12 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                              {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                                <img
+                                  src={(userData as any)?.photoURL || user?.photoURL || ''}
+                                  alt="Profile"
+                                  className="w-full h-full object-cover"
+                                  onError={() => {
+                                    setImageError(true);
+                                  }}
+                                />
+                              ) : (
+                                <span className="text-white font-medium">
+                                  {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-gray-900 truncate">
+                                {(userData as any)?.name || user?.displayName || user?.email?.split('@')[0] || 'অ্যাডমিন'}
+                              </p>
+                              <p className="text-xs text-gray-500 truncate">
+                                {user?.email || (userData as any)?.email || ''}
+                              </p>
+                              <span className="inline-block mt-1 px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-800 rounded">
+                                {(userData as any)?.role === 'super_admin' ? 'সুপার অ্যাডমিন' : 'অ্যাডমিন'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="py-1">
+                          <Link
+                            href="/admin/profile"
+                            onClick={() => setShowUserMenu(false)}
+                            className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                          >
+                            <UserCircle className="w-4 h-4 mr-3" />
+                            প্রোফাইল
+                          </Link>
+                          <Link
+                            href="/admin/settings"
+                            onClick={() => setShowUserMenu(false)}
+                            className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                          >
+                            <Settings className="w-4 h-4 mr-3" />
+                            সেটিংস
+                          </Link>
+                          <button
+                            onClick={() => {
+                              setShowUserMenu(false);
+                              auth.signOut();
+                            }}
+                            className="flex items-center w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                          >
+                            <LogOut className="w-4 h-4 mr-3" />
+                            লগআউট
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -316,11 +897,52 @@ function TeachersPage() {
 
         {/* Page Content */}
         <div className="flex-1 p-4 lg:p-6 bg-gray-50 overflow-y-auto">
+          {/* Success Message */}
+          {showSuccessMessage && (
+            <div className="mb-4 p-4 bg-green-100 border border-green-400 text-green-700 rounded-lg flex items-center justify-between">
+              <div className="flex items-center">
+                <Award className="w-5 h-5 mr-2" />
+                {messageText}
+              </div>
+              <button onClick={() => setShowSuccessMessage(false)}>
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          )}
+
           {/* Error Message */}
-          {error && (
-            <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg flex items-center">
-              <AlertCircle className="w-5 h-5 mr-2" />
-              {error}
+          {(error || showErrorMessage) && (
+            <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg flex items-center justify-between">
+              <div className="flex items-center">
+                <AlertCircle className="w-5 h-5 mr-2" />
+                {showErrorMessage ? messageText : error}
+              </div>
+              {showErrorMessage && (
+                <button onClick={() => setShowErrorMessage(false)}>
+                  <X className="w-5 h-5" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Notification for Teacher Login Creation */}
+          {notification.show && (
+            <div className={`mb-4 p-4 border rounded-lg flex items-center justify-between ${
+              notification.type === 'success' 
+                ? 'bg-green-100 border-green-400 text-green-700' 
+                : 'bg-red-100 border-red-400 text-red-700'
+            }`}>
+              <div className="flex items-center">
+                {notification.type === 'success' ? (
+                  <CheckCircle className="w-5 h-5 mr-2" />
+                ) : (
+                  <AlertCircle className="w-5 h-5 mr-2" />
+                )}
+                <span className="text-sm">{notification.message}</span>
+              </div>
+              <button onClick={() => setNotification({ show: false, message: '', type: 'success' })}>
+                <X className="w-5 h-5" />
+              </button>
             </div>
           )}
 
@@ -333,6 +955,30 @@ function TeachersPage() {
               </p>
             </div>
             <div className="flex space-x-3">
+              <button
+                onClick={handleExportPDF}
+                disabled={isExporting}
+                className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isExporting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
+                <span>PDF</span>
+              </button>
+              <button
+                onClick={handleExportExcel}
+                disabled={isExporting}
+                className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isExporting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <FileDown className="w-4 h-4" />
+                )}
+                <span>Excel</span>
+              </button>
               <button
                 onClick={() => router.push('/admin/teachers/id-cards')}
                 className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center space-x-2"
@@ -420,26 +1066,58 @@ function TeachersPage() {
                     )}
                   </div>
 
-                  <div className="flex space-x-2">
+                  <div className="flex flex-col space-y-2">
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => handleViewTeacher(teacher)}
+                        className="flex-1 bg-blue-50 text-blue-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-100 flex items-center justify-center space-x-1"
+                      >
+                        <Eye className="w-4 h-4" />
+                        <span>দেখুন</span>
+                      </button>
+                      <button
+                        onClick={() => handleEditTeacher(teacher)}
+                        className="flex-1 bg-green-50 text-green-600 px-3 py-2 rounded-lg text-sm hover:bg-green-100 flex items-center justify-center space-x-1"
+                      >
+                        <Edit className="w-4 h-4" />
+                        <span>সম্পাদনা</span>
+                      </button>
+                      <button
+                        onClick={() => handleDownloadTeacher(teacher)}
+                        disabled={isExporting}
+                        className="bg-purple-50 text-purple-600 px-3 py-2 rounded-lg text-sm hover:bg-purple-100 flex items-center justify-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="ডাউনলোড করুন"
+                      >
+                        {isExporting ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Download className="w-4 h-4" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteClick(teacher)}
+                        className="bg-red-50 text-red-600 px-3 py-2 rounded-lg text-sm hover:bg-red-100"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                     <button
-                      onClick={() => handleViewTeacher(teacher)}
-                      className="flex-1 bg-blue-50 text-blue-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-100 flex items-center justify-center space-x-1"
+                      onClick={() => handleCreateTeacherAccount(teacher)}
+                      disabled={creatingTeacher === teacher.uid || !teacher.email || (!teacher.phoneNumber && !teacher.phone)}
+                      className="w-full bg-indigo-50 text-indigo-600 px-3 py-2 rounded-lg text-sm hover:bg-indigo-100 flex items-center justify-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title={!teacher.email || (!teacher.phoneNumber && !teacher.phone) ? 'ইমেইল এবং ফোন নম্বর প্রয়োজন' : 'শিক্ষক লগইন তৈরি করুন'}
                     >
-                      <Eye className="w-4 h-4" />
-                      <span>দেখুন</span>
-                    </button>
-                    <button
-                      onClick={() => handleEditTeacher(teacher)}
-                      className="flex-1 bg-green-50 text-green-600 px-3 py-2 rounded-lg text-sm hover:bg-green-100 flex items-center justify-center space-x-1"
-                    >
-                      <Edit className="w-4 h-4" />
-                      <span>সম্পাদনা</span>
-                    </button>
-                    <button
-                      onClick={() => handleDeleteClick(teacher)}
-                      className="bg-red-50 text-red-600 px-3 py-2 rounded-lg text-sm hover:bg-red-100"
-                    >
-                      <Trash2 className="w-4 h-4" />
+                      {creatingTeacher === teacher.uid ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>তৈরি হচ্ছে...</span>
+                        </>
+                      ) : (
+                        <>
+                          <UserCheck className="w-4 h-4" />
+                          <span>লগইন তৈরি করুন</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>
@@ -518,6 +1196,45 @@ function TeachersPage() {
 }
 
 export default function TeachersPageWrapper() {
+  const { userData, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    // Block unauthorized access - only admin and super_admin can access
+    if (!loading && userData?.role) {
+      const role = userData.role;
+      
+      if (role === 'teacher') {
+        router.push('/teacher/teachers');
+        return;
+      }
+      
+      if (role === 'parent') {
+        router.push('/parent/dashboard');
+        return;
+      }
+      
+      if (role === 'student') {
+        router.push('/student/dashboard');
+        return;
+      }
+      
+      // Only allow admin and super_admin
+      if (role !== 'admin' && role !== 'super_admin') {
+        router.push('/');
+        return;
+      }
+    }
+  }, [userData, loading, router]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
   return (
     <ProtectedRoute requireAuth={true}>
       <TeachersPage />

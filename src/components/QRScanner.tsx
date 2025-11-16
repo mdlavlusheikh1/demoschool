@@ -136,18 +136,19 @@ export const QRScanner: React.FC<QRScannerProps> = ({
       qrCodeScannerRef.current = scanner;
 
       const config = {
-        fps,
+        fps: 20, // Higher FPS for better detection
         qrbox: { width: qrbox, height: qrbox },
         aspectRatio,
-        disableFlip,
-        verbose,
+        disableFlip: false, // Enable flip for better detection
+        verbose: false, // Disable verbose to reduce console spam
         experimentalFeatures: {
-          useBarCodeDetectorIfSupported: false
+          useBarCodeDetectorIfSupported: true // Try using native detector
         },
-        supportedScanTypes: ['qr_code'],
+        supportedScanTypes: undefined, // Support all types
         showTorchButtonIfSupported: true,
         showZoomSliderIfSupported: true,
-        defaultZoomValueIfSupported: 2
+        defaultZoomValueIfSupported: 1,
+        formatsToSupport: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] // All formats
       };
 
       const cameraToUse = cameraId || selectedCamera;
@@ -158,20 +159,78 @@ export const QRScanner: React.FC<QRScannerProps> = ({
 
       console.log('Starting QR scanner with camera:', cameraToUse);
 
+      // Get video element and apply focus constraints after scanner starts
       await scanner.start(
         cameraToUse,
         config,
         (decodedText: string, result: any) => {
-          console.log('QR code scanned successfully:', decodedText);
-          handleScanSuccess({ decodedText, result });
+          try {
+            console.log('✅ QR CODE DETECTED!');
+            console.log('📱 Decoded text:', decodedText);
+            console.log('📋 Full result:', result);
+            console.log('📋 Result type:', typeof result);
+            console.log('📋 Result keys:', result ? Object.keys(result) : 'null');
+            
+            // Ensure we pass the data correctly
+            if (decodedText) {
+              handleScanSuccess({ decodedText, result });
+            } else {
+              console.error('❌ No decoded text in result');
+            }
+          } catch (error) {
+            console.error('❌ Error in QR scan success callback:', error);
+            onScanError?.(error instanceof Error ? error.message : 'Unknown error in scan callback');
+          }
         },
         (errorMessage: string) => {
-          // Only log significant errors, not every frame
-          if (verbose && errorMessage.includes('NotFoundException')) {
-            console.log('QR scan error:', errorMessage);
+          // Suppress common scanning errors (normal when no QR in frame)
+          const suppressedErrors = [
+            'NotFoundException',
+            'No QR code found',
+            'No MultiFormat Readers were able to detect the code',
+            'QR code parse error',
+            'QR code not found',
+            'No QR code detected'
+          ];
+          
+          const shouldSuppress = suppressedErrors.some(error => 
+            errorMessage.includes(error)
+          );
+          
+          if (!shouldSuppress) {
+            console.error('❌ QR scan error:', errorMessage);
+            onScanError?.(errorMessage);
           }
         }
       );
+
+      // Apply camera focus settings after scanner starts
+      setTimeout(() => {
+        try {
+          const videoElement = document.querySelector(`#${qrCodeRegionId.current} video`) as HTMLVideoElement;
+          if (videoElement && videoElement.srcObject) {
+            const stream = videoElement.srcObject as MediaStream;
+            const videoTrack = stream.getVideoTracks()[0];
+            
+            if (videoTrack && videoTrack.getCapabilities) {
+              const capabilities = videoTrack.getCapabilities() as any;
+              
+              // Apply focus mode if supported
+              if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+                videoTrack.applyConstraints({
+                  advanced: [
+                    { focusMode: 'continuous' } as any
+                  ]
+                }).catch((err: any) => {
+                  console.log('Focus constraint not supported:', err);
+                });
+              }
+            }
+          }
+        } catch (err) {
+          console.log('Could not apply focus settings:', err);
+        }
+      }, 500);
 
       setIsScanning(true);
       setIsStarting(false);
@@ -217,59 +276,85 @@ export const QRScanner: React.FC<QRScannerProps> = ({
   };
 
   const handleScanSuccess = (result: ScanResult) => {
-    const { decodedText } = result;
+    try {
+      const { decodedText } = result;
 
-    console.log('Raw QR scan result:', decodedText);
-    console.log('Full result object:', result);
+      console.log('🔍 handleScanSuccess called');
+      console.log('Raw QR scan result:', decodedText);
+      console.log('Full result object:', result);
+      console.log('decodedText type:', typeof decodedText);
+      console.log('decodedText length:', decodedText?.length);
 
-    // Parse the QR data to determine its type
-    const studentData = QRUtils.parseQRData(decodedText);
-    const sessionData = QRUtils.parseSessionQRData(decodedText);
-
-    console.log('Parsed student data:', studentData);
-    console.log('Parsed session data:', sessionData);
-
-    let parsedData = null;
-
-    if (studentData) {
-      parsedData = {
-        type: 'student',
-        data: studentData
-      };
-      console.log('✅ Detected student QR code:', studentData);
-    } else if (sessionData) {
-      parsedData = {
-        type: 'session',
-        data: sessionData
-      };
-      console.log('✅ Detected session QR code:', sessionData);
-    } else {
-      // Try to parse as JSON even if it doesn't match our expected format
-      try {
-        const jsonData = JSON.parse(decodedText);
-        parsedData = {
-          type: 'json',
-          data: jsonData
-        };
-        console.log('✅ Detected JSON QR code:', jsonData);
-      } catch (parseError) {
-        parsedData = {
-          type: 'unknown',
-          data: decodedText
-        };
-        console.log('❌ Detected unknown QR code format:', decodedText);
-        console.log('Parse error:', parseError);
+      if (!decodedText || decodedText.trim() === '') {
+        console.error('❌ Empty decoded text received');
+        return;
       }
-    }
 
-    // Show immediate feedback for any scan
-    if (parsedData && parsedData.type !== 'unknown') {
-      console.log('✅ Valid QR code detected, calling onScanSuccess');
-    } else {
-      console.log('❌ Invalid QR code format detected');
-    }
+      // Parse the QR data to determine its type
+      const studentData = QRUtils.parseQRData(decodedText);
+      const sessionData = QRUtils.parseSessionQRData(decodedText);
+      const teacherData = QRUtils.parseTeacherQR(decodedText);
 
-    onScanSuccess(decodedText, parsedData);
+      console.log('Parsed student data:', studentData);
+      console.log('Parsed session data:', sessionData);
+      console.log('Parsed teacher data:', teacherData);
+
+      let parsedData = null;
+
+      if (teacherData) {
+        parsedData = {
+          type: 'teacher',
+          data: teacherData
+        };
+        console.log('✅ Detected teacher QR code:', teacherData);
+      } else if (studentData) {
+        parsedData = {
+          type: 'student',
+          data: studentData
+        };
+        console.log('✅ Detected student QR code:', studentData);
+      } else if (sessionData) {
+        parsedData = {
+          type: 'session',
+          data: sessionData
+        };
+        console.log('✅ Detected session QR code:', sessionData);
+      } else {
+        // Try to parse as JSON even if it doesn't match our expected format
+        try {
+          const jsonData = JSON.parse(decodedText);
+          parsedData = {
+            type: 'json',
+            data: jsonData
+          };
+          console.log('✅ Detected JSON QR code:', jsonData);
+        } catch (parseError) {
+          parsedData = {
+            type: 'unknown',
+            data: decodedText
+          };
+          console.log('❌ Detected unknown QR code format:', decodedText);
+          console.log('Parse error:', parseError);
+        }
+      }
+
+      // Show immediate feedback for any scan
+      if (parsedData && parsedData.type !== 'unknown') {
+        console.log('✅ Valid QR code detected, calling onScanSuccess');
+      } else {
+        console.log('❌ Invalid QR code format detected');
+      }
+
+      try {
+        onScanSuccess(decodedText, parsedData);
+      } catch (error) {
+        console.error('❌ Error calling onScanSuccess:', error);
+        onScanError?.(error instanceof Error ? error.message : 'Unknown error in onScanSuccess');
+      }
+    } catch (error) {
+      console.error('❌ Error in handleScanSuccess:', error);
+      onScanError?.(error instanceof Error ? error.message : 'Unknown error in handleScanSuccess');
+    }
   };
 
   const switchCamera = async (cameraId: string) => {
@@ -282,9 +367,28 @@ export const QRScanner: React.FC<QRScannerProps> = ({
 
   return (
     <div className="qr-scanner-container" key={qrCodeRegionId.current}>
-      <div className="mb-4 flex flex-col sm:flex-row gap-4 items-center justify-between">
-        {/* Camera Selection */}
-        {cameras.length > 1 && (
+      {/* Top Bar with Stop Button and Status */}
+      {isScanning && (
+        <div className="mb-4 flex items-center justify-between">
+          <button
+            onClick={stopScanning}
+            className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center space-x-2 font-medium"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            <span>Stop Scanning</span>
+          </button>
+          <div className="px-4 py-2 bg-green-600 text-white rounded-lg flex items-center space-x-2">
+            <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+            <span className="font-medium">স্ক্যান হচ্ছে...</span>
+          </div>
+        </div>
+      )}
+
+      {/* Camera Selection - Only show when not scanning */}
+      {!isScanning && cameras.length > 1 && (
+        <div className="mb-4">
           <select
             value={selectedCamera}
             onChange={(e) => switchCamera(e.target.value)}
@@ -296,28 +400,21 @@ export const QRScanner: React.FC<QRScannerProps> = ({
               </option>
             ))}
           </select>
-        )}
-
-        {/* Scan Controls */}
-        <div className="flex gap-2">
-          {!isScanning ? (
-            <button
-              onClick={() => startScanning()}
-              disabled={!selectedCamera || isStarting}
-              className="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
-            >
-              {isStarting ? 'Starting...' : 'Start Scanning'}
-            </button>
-          ) : (
-            <button
-              onClick={stopScanning}
-              className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600"
-            >
-              Stop Scanning
-            </button>
-          )}
         </div>
-      </div>
+      )}
+
+      {/* Start Button - Only show when not scanning */}
+      {!isScanning && (
+        <div className="mb-4">
+          <button
+            onClick={() => startScanning()}
+            disabled={!selectedCamera || isStarting}
+            className="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            {isStarting ? 'Starting...' : 'Start Scanning'}
+          </button>
+        </div>
+      )}
 
       {/* Error Display */}
       {error && (
@@ -337,12 +434,71 @@ export const QRScanner: React.FC<QRScannerProps> = ({
       )}
 
       {/* QR Scanner Region */}
-      <div className="relative border-2 border-dashed border-gray-300 rounded-lg overflow-hidden">
+      <div className="relative border-2 border-dashed border-gray-300 rounded-lg bg-black" style={{ width: `${width}px`, margin: '0 auto', overflow: 'visible' }}>
         <div
           id={qrCodeRegionId.current}
-          style={{ width: `${width}px`, height: `${height}px` }}
-          className="mx-auto"
+          style={{ 
+            width: `${width}px`, 
+            height: `${height}px`,
+            maxWidth: '100%',
+            margin: '0 auto',
+            display: 'block',
+            position: 'relative',
+            overflow: 'visible'
+          }}
+          className="mx-auto qr-scanner-view"
         />
+
+        {/* Green Corner Markers - Only show when scanning */}
+        {isScanning && (
+          <>
+            {/* Calculate center position for QR box */}
+            {(() => {
+              const centerX = width / 2;
+              const centerY = height / 2;
+              const boxHalf = qrbox / 2;
+              const markerSize = 32;
+              const markerOffset = 0;
+              
+              return (
+                <>
+                  {/* Top Left Corner */}
+                  <div 
+                    className="absolute w-8 h-8 border-t-4 border-l-4 border-green-500 pointer-events-none z-10"
+                    style={{ 
+                      top: `${centerY - boxHalf - markerOffset}px`, 
+                      left: `${centerX - boxHalf - markerOffset}px`
+                    }}
+                  ></div>
+                  {/* Top Right Corner */}
+                  <div 
+                    className="absolute w-8 h-8 border-t-4 border-r-4 border-green-500 pointer-events-none z-10"
+                    style={{ 
+                      top: `${centerY - boxHalf - markerOffset}px`, 
+                      left: `${centerX + boxHalf - markerSize + markerOffset}px`
+                    }}
+                  ></div>
+                  {/* Bottom Left Corner */}
+                  <div 
+                    className="absolute w-8 h-8 border-b-4 border-l-4 border-green-500 pointer-events-none z-10"
+                    style={{ 
+                      top: `${centerY + boxHalf - markerSize + markerOffset}px`, 
+                      left: `${centerX - boxHalf - markerOffset}px`
+                    }}
+                  ></div>
+                  {/* Bottom Right Corner */}
+                  <div 
+                    className="absolute w-8 h-8 border-b-4 border-r-4 border-green-500 pointer-events-none z-10"
+                    style={{ 
+                      top: `${centerY + boxHalf - markerSize + markerOffset}px`, 
+                      left: `${centerX + boxHalf - markerSize + markerOffset}px`
+                    }}
+                  ></div>
+                </>
+              );
+            })()}
+          </>
+        )}
 
         {!isScanning && !error && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-50 bg-opacity-90">

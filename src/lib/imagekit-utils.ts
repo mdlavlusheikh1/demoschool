@@ -44,6 +44,10 @@ export const IMAGEKIT_FOLDERS = {
 
 // Upload file to ImageKit
 export async function uploadToImageKit(options: ImageKitUploadOptions): Promise<ImageKitFile> {
+  if (!imagekit) {
+    throw new Error('ImageKit not configured. Please set up ImageKit credentials in your environment variables. See ENVIRONMENT_SETUP.md for instructions.');
+  }
+
   try {
     // Convert File to Buffer if needed
     let fileData: string | Buffer = options.file as string | Buffer;
@@ -82,7 +86,7 @@ export async function uploadToImageKit(options: ImageKitUploadOptions): Promise<
 
 // Generate authentication parameters for client-side uploads
 export function getImageKitAuthParams() {
-  const authenticationEndpoint = '/api/imagekit/auth';
+  const authenticationEndpoint = '/api/imagekit';
   return {
     token: '', // Will be fetched from the endpoint
     expire: 0, // Will be fetched from the endpoint
@@ -93,6 +97,10 @@ export function getImageKitAuthParams() {
 
 // Delete file from ImageKit
 export async function deleteFromImageKit(fileId: string): Promise<void> {
+  if (!imagekit) {
+    throw new Error('ImageKit not configured. Please set up ImageKit credentials in your environment variables.');
+  }
+
   try {
     await imagekit.deleteFile(fileId);
   } catch (error) {
@@ -103,6 +111,10 @@ export async function deleteFromImageKit(fileId: string): Promise<void> {
 
 // Get file details from ImageKit
 export async function getImageKitFile(fileId: string): Promise<ImageKitFile> {
+  if (!imagekit) {
+    throw new Error('ImageKit not configured. Please set up ImageKit credentials in your environment variables.');
+  }
+
   try {
     const result = await imagekit.getFileDetails(fileId);
     return {
@@ -124,6 +136,41 @@ export async function getImageKitFile(fileId: string): Promise<ImageKitFile> {
   }
 }
 
+/**
+ * Get a proxy URL to hide ImageKit URLs from public
+ * @param url - The original ImageKit URL
+ * @param useProxy - Whether to use proxy (default: true for public pages)
+ * @returns Proxy URL or original URL
+ */
+export function getProxyUrl(url: string, useProxy: boolean = true): string {
+  if (!url || !url.trim()) {
+    return url || '';
+  }
+
+  // Only proxy ImageKit URLs if useProxy is true
+  if (useProxy && (url.includes('imagekit.io') || url.includes('ik.imagekit.io'))) {
+    try {
+      // Encode URL to base64, then make it URL-safe
+      const base64 = typeof window !== 'undefined' 
+        ? btoa(unescape(encodeURIComponent(url))) // Browser
+        : Buffer.from(url, 'utf-8').toString('base64'); // Node.js
+      
+      // Convert to URL-safe base64 (replace + with -, / with _, remove = padding)
+      const urlSafe = base64
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+      
+      return `/api/proxy/${urlSafe}`;
+    } catch (error) {
+      console.error('Error encoding URL for proxy:', error);
+      return url; // Fallback to original URL
+    }
+  }
+
+  return url;
+}
+
 // Transform image URL with ImageKit transformations
 export function transformImageUrl(
   url: string, 
@@ -141,8 +188,19 @@ export function transformImageUrl(
     brightness?: number;
     saturation?: number;
     rotation?: number;
-  } = {}
+  } = {},
+  useProxy: boolean = true
 ): string {
+  // If no URL provided, return empty string
+  if (!url || !url.trim()) {
+    return url || '';
+  }
+
+  // If URL is not from ImageKit, return as-is
+  if (!url.includes('imagekit.io') && !url.includes('ik.imagekit.io')) {
+    return url;
+  }
+
   const params = [];
   
   if (transformations.width) params.push(`w-${transformations.width}`);
@@ -159,11 +217,35 @@ export function transformImageUrl(
   if (transformations.saturation) params.push(`e-saturation-${transformations.saturation}`);
   if (transformations.rotation) params.push(`rt-${transformations.rotation}`);
 
-  if (params.length === 0) return url;
+  let transformedUrl = url;
 
-  // Insert transformations into ImageKit URL
-  const transformationString = `tr:${params.join(',')}`;
-  return url.replace(/(\/tr:.*?)?\/([^/]+)$/, `/${transformationString}/$2`);
+  // Apply transformations if any
+  if (params.length > 0) {
+    try {
+      const transformationString = `tr:${params.join(',')}`;
+      // Check if URL already has transformations
+      if (url.includes('/tr:')) {
+        // Replace existing transformations
+        transformedUrl = url.replace(/\/tr:[^/]+/, `/${transformationString}`);
+      } else {
+        // Add transformations before filename
+        const urlParts = url.split('/');
+        const filename = urlParts.pop();
+        urlParts.push(transformationString);
+        urlParts.push(filename || '');
+        transformedUrl = urlParts.join('/');
+      }
+    } catch (error) {
+      console.error('Error transforming ImageKit URL:', error);
+    }
+  }
+
+  // Return proxy URL if useProxy is true
+  if (useProxy) {
+    return getProxyUrl(transformedUrl, true);
+  }
+
+  return transformedUrl;
 }
 
 // Helper functions for school management specific uploads

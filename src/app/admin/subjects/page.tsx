@@ -4,14 +4,28 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth, db } from '@/lib/firebase';
 import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { subjectQueries, Subject, Class, settingsQueries } from '@/lib/database-queries';
+import { subjectQueries, classQueries, Subject, Class, settingsQueries } from '@/lib/database-queries';
 import {
   Home, Users, BookOpen, ClipboardList, Calendar, Settings, LogOut, Menu, X,
   UserCheck, GraduationCap, Building, CreditCard, TrendingUp, Search, Bell,
   Plus, Edit, Trash2, Eye, Clock, Book, FileText,
-  Package, Loader2, RefreshCw
+  Package, Loader2, RefreshCw, ChevronDown,
+  Globe,
+  Award,
+  MessageSquare,
+  Gift,
+  Sparkles,
+  AlertCircle,
+  BookOpen as BookOpenIcon,
+  Users as UsersIcon,
+  Wallet,
+  FolderOpen,
+  UserPlus,
+  Wrench,
 } from 'lucide-react';
+import AlertDialog from '@/components/ui/alert-dialog';
 
 function SubjectsPage() {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -41,13 +55,35 @@ function SubjectsPage() {
     nameEn: '',
     code: '',
     teacherName: '',
-    selectedClass: '',
+    selectedClasses: [] as string[],
     type: 'মূল' as 'মূল' | 'ধর্মীয়' | 'ঐচ্ছিক',
     description: '',
     totalMarks: 100
   });
 
+  // Dropdown states
+  const [isClassDropdownOpen, setIsClassDropdownOpen] = useState(false);
+
+  // Alert dialog states
+  const [alertDialog, setAlertDialog] = useState<{
+    isOpen: boolean;
+    type: 'success' | 'error' | 'warning' | 'info';
+    title: string;
+    message: string;
+  }>({
+    isOpen: false,
+    type: 'info',
+    title: '',
+    message: ''
+  });
+  const [imageError, setImageError] = useState(false);
   const router = useRouter();
+  const { userData } = useAuth();
+
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
 
   useEffect(() => {
     if (!auth) {
@@ -75,13 +111,22 @@ function SubjectsPage() {
       loadSubjects();
     };
 
+    // Close dropdown when clicking outside
+    const handleClickOutside = (event: MouseEvent) => {
+      if (isClassDropdownOpen && !(event.target as Element).closest('.class-dropdown')) {
+        setIsClassDropdownOpen(false);
+      }
+    };
+
     window.addEventListener('focus', handleFocus);
+    window.addEventListener('click', handleClickOutside);
 
     return () => {
       unsubscribe();
       window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('click', handleClickOutside);
     };
-  }, [router]);
+  }, [router, isClassDropdownOpen]);
 
   // Reload subjects when settings change
   useEffect(() => {
@@ -107,7 +152,7 @@ function SubjectsPage() {
   const loadSubjects = async () => {
     try {
       setLoadingSubjects(true);
-      const schoolId = settings?.schoolCode || 'IQRA-2025';
+      const schoolId = settings?.schoolCode || '102330';
       let subjectsData = await subjectQueries.getActiveSubjects(schoolId);
 
       // Filter out exam-specific subjects - only show regular subjects in main subjects page
@@ -131,79 +176,19 @@ function SubjectsPage() {
   const loadClasses = async () => {
     try {
       setLoadingClasses(true);
-      console.log('🔄 Starting to load classes...');
+      console.log('🔄 Starting to load classes from database...');
 
-      // Always use fallback classes for now to ensure they show
-      const fallbackClasses = [
-        { classId: 'play-class', className: 'প্লে', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'nursery-class', className: 'নার্সারি', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'one-class', className: 'প্রথম', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'two-class', className: 'দ্বিতীয়', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'three-class', className: 'তৃতীয়', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'four-class', className: 'চতুর্থ', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'five-class', className: 'পঞ্চম', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'six-class', className: 'ষষ্ঠ', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'seven-class', className: 'সপ্তম', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'eight-class', className: 'অষ্টম', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'nine-class', className: 'নবম', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'ten-class', className: 'দশম', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' }
-      ];
+      const schoolId = settings?.schoolCode || '102330';
+      console.log('🏫 Loading classes for school ID:', schoolId);
 
-      setClasses(fallbackClasses);
-      console.log('✅ Classes loaded (fallback):', fallbackClasses);
+      let classesData = await classQueries.getClassesBySchool(schoolId);
+      console.log('📋 Classes data received:', classesData);
 
-      // Commented out Firebase loading to always use fallback classes and avoid showing old data
-      /*
-      // Try to load from Firebase in background
-      try {
-        const { collection, getDocs } = await import('firebase/firestore');
-        const classesSnapshot = await getDocs(collection(db, 'classes'));
-        console.log('🔍 Firebase classes snapshot size:', classesSnapshot.size);
-
-        if (!classesSnapshot.empty) {
-          const firebaseClasses: any[] = [];
-          classesSnapshot.forEach((doc) => {
-            console.log('📄 Class document:', doc.id, doc.data());
-            firebaseClasses.push({
-              id: doc.id,
-              ...doc.data()
-            });
-          });
-
-          // Format classes for display
-          const formattedClasses = firebaseClasses.map((cls) => ({
-            classId: cls.classId || cls.id,
-            className: cls.className || cls.name || `Class ${cls.id}`,
-            section: cls.section || 'এ',
-            teacherName: cls.teacherName || cls.teacher || 'নির্ধারিত নয়',
-            totalStudents: cls.totalStudents || 0,
-            isActive: cls.isActive !== false,
-            schoolId: cls.schoolId || settings?.schoolCode || 'IQRA-2025',
-            schoolName: cls.schoolName || settings?.schoolName || 'আমার স্কুল',
-            teacherId: cls.teacherId || '',
-            academicYear: cls.academicYear || '2025'
-          }));
-
-          setClasses(formattedClasses);
-          localStorage.setItem('iqra_classes', JSON.stringify(formattedClasses));
-          console.log('✅ Classes loaded from Firebase:', formattedClasses);
-        } else {
-          console.log('⚠️ No classes found in Firebase, using fallback');
-        }
-      } catch (firebaseError) {
-        console.error('❌ Firebase error loading classes:', firebaseError);
-        console.log('🔄 Using fallback classes due to Firebase error');
-      }
-      */
+      setClasses(classesData);
+      console.log('✅ Classes loaded from database:', classesData.length, 'classes');
     } catch (error) {
-      console.error('❌ Critical error loading classes:', error);
-      // Ensure we always have fallback classes
-      const emergencyClasses = [
-        { classId: 'play-class', className: 'প্লে', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'nursery-class', className: 'নার্সারি', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' },
-        { classId: 'one-class', className: 'প্রথম', section: 'এ', teacherName: 'নির্ধারিত নয়', totalStudents: 0, isActive: true, schoolId: settings?.schoolCode || 'IQRA-2025', schoolName: settings?.schoolName || 'আমার স্কুল', teacherId: '', academicYear: '2025' }
-      ];
-      setClasses(emergencyClasses);
+      console.error('❌ Error loading classes:', error);
+      setClasses([]); // Set empty array on error
     } finally {
       setLoadingClasses(false);
     }
@@ -211,8 +196,13 @@ function SubjectsPage() {
 
   // Handle create subject
   const handleCreateSubject = async () => {
-    if (!subjectForm.name || !subjectForm.code || !subjectForm.selectedClass || !subjectForm.totalMarks) {
-      alert('অনুগ্রহ করে বিষয়ের নাম, কোড, ক্লাস এবং মোট নম্বর নির্ধারণ করুন।');
+    if (!subjectForm.name || !subjectForm.code || subjectForm.selectedClasses.length === 0 || !subjectForm.totalMarks) {
+      setAlertDialog({
+        isOpen: true,
+        type: 'warning',
+        title: 'সতর্কতা!',
+        message: 'অনুগ্রহ করে বিষয়ের নাম, কোড, ক্লাস এবং মোট নম্বর নির্ধারণ করুন।'
+      });
       return;
     }
 
@@ -222,13 +212,13 @@ function SubjectsPage() {
         nameEn: subjectForm.nameEn || subjectForm.name,
         code: subjectForm.code,
         teacherName: subjectForm.teacherName,
-        classes: [subjectForm.selectedClass],
+        classes: subjectForm.selectedClasses,
         students: 0, // Default value
         credits: 1, // Default value
         type: subjectForm.type,
         description: subjectForm.description,
         totalMarks: subjectForm.totalMarks,
-        schoolId: settings?.schoolCode || 'IQRA-2025',
+        schoolId: settings?.schoolCode || '102330',
         createdBy: user?.email || 'admin',
         isActive: true
       };
@@ -237,48 +227,112 @@ function SubjectsPage() {
       setShowCreateDialog(false);
       resetForm();
       loadSubjects(); // Reload subjects
-      alert('বিষয় সফলভাবে তৈরি করা হয়েছে!');
+      setAlertDialog({
+        isOpen: true,
+        type: 'success',
+        title: 'সফল!',
+        message: 'বিষয় সফলভাবে তৈরি করা হয়েছে!'
+      });
     } catch (error) {
       console.error('Error creating subject:', error);
-      alert('বিষয় তৈরি করতে ত্রুটি হয়েছে।');
+      setAlertDialog({
+        isOpen: true,
+        type: 'error',
+        title: 'ত্রুটি!',
+        message: 'বিষয় তৈরি করতে ত্রুটি হয়েছে।'
+      });
     }
   };
 
   // Handle edit subject
   const handleEditSubject = async () => {
-    if (!selectedSubject || !subjectForm.name || !subjectForm.code || !subjectForm.selectedClass || !subjectForm.totalMarks) {
-      alert('অনুগ্রহ করে বিষয়ের নাম, কোড, ক্লাস এবং মোট নম্বর নির্ধারণ করুন।');
+    if (!selectedSubject || !subjectForm.name || !subjectForm.code || subjectForm.selectedClasses.length === 0 || !subjectForm.totalMarks) {
+      setAlertDialog({
+        isOpen: true,
+        type: 'warning',
+        title: 'সতর্কতা!',
+        message: 'অনুগ্রহ করে বিষয়ের নাম, কোড, ক্লাস এবং মোট নম্বর নির্ধারণ করুন।'
+      });
+      return;
+    }
+
+    if (!selectedSubject.id) {
+      setAlertDialog({
+        isOpen: true,
+        type: 'error',
+        title: 'ত্রুটি!',
+        message: 'বিষয়ের আইডি পাওয়া যায়নি।'
+      });
       return;
     }
 
     try {
-      const updates = {
+      // Build updates object, only including fields that need to be updated
+      const updates: Partial<Subject> = {
         name: subjectForm.name,
         nameEn: subjectForm.nameEn || subjectForm.name,
         code: subjectForm.code,
-        teacherName: subjectForm.teacherName,
-        classes: [subjectForm.selectedClass],
-        students: 0, // Default value
-        credits: 1, // Default value
+        teacherName: subjectForm.teacherName || '',
+        classes: subjectForm.selectedClasses,
         type: subjectForm.type,
-        description: subjectForm.description,
+        description: subjectForm.description || '',
         totalMarks: subjectForm.totalMarks
       };
 
-      if (!selectedSubject.id) {
-        alert('বিষয়ের আইডি পাওয়া যায়নি।');
-        return;
+      // Preserve existing values if they exist
+      if (selectedSubject.students !== undefined) {
+        updates.students = selectedSubject.students;
+      }
+      if (selectedSubject.credits !== undefined) {
+        updates.credits = selectedSubject.credits;
+      }
+      if (selectedSubject.schoolId) {
+        updates.schoolId = selectedSubject.schoolId;
+      }
+      if (selectedSubject.createdBy) {
+        updates.createdBy = selectedSubject.createdBy;
+      }
+      if (selectedSubject.isActive !== undefined) {
+        updates.isActive = selectedSubject.isActive;
+      }
+      if (selectedSubject.isExamSubject !== undefined) {
+        updates.isExamSubject = selectedSubject.isExamSubject;
+      }
+
+      console.log('🔄 Updating subject:', {
+        id: selectedSubject.id,
+        updates: updates,
+        originalSubject: selectedSubject
+      });
+
+      if (!selectedSubject.id || !selectedSubject.id.trim()) {
+        throw new Error('Invalid subject ID');
       }
 
       await subjectQueries.updateSubject(selectedSubject.id, updates);
+      
+      console.log('✅ Subject updated successfully');
+      
       setShowEditDialog(false);
       setSelectedSubject(null);
       resetForm();
-      loadSubjects(); // Reload subjects
-      alert('বিষয় সফলভাবে আপডেট করা হয়েছে!');
+      await loadSubjects(); // Reload subjects
+      setAlertDialog({
+        isOpen: true,
+        type: 'success',
+        title: 'সফল!',
+        message: 'বিষয় সফলভাবে আপডেট করা হয়েছে!'
+      });
     } catch (error) {
-      console.error('Error updating subject:', error);
-      alert('বিষয় আপডেট করতে ত্রুটি হয়েছে।');
+      console.error('❌ Error updating subject:', error);
+      console.error('Subject ID:', selectedSubject?.id);
+      console.error('Selected Subject:', selectedSubject);
+      setAlertDialog({
+        isOpen: true,
+        type: 'error',
+        title: 'ত্রুটি!',
+        message: `বিষয় আপডেট করতে ত্রুটি হয়েছে: ${error instanceof Error ? error.message : 'Unknown error'}`
+      });
     }
   };
 
@@ -291,11 +345,51 @@ function SubjectsPage() {
       setShowDeleteDialog(false);
       setSelectedSubject(null);
       loadSubjects(); // Reload subjects
-      alert('বিষয় সফলভাবে মুছে ফেলা হয়েছে!');
+      setAlertDialog({
+        isOpen: true,
+        type: 'success',
+        title: 'সফল!',
+        message: 'বিষয় সফলভাবে মুছে ফেলা হয়েছে!'
+      });
     } catch (error) {
       console.error('Error deleting subject:', error);
-      alert('বিষয় মুছে ফেলতে ত্রুটি হয়েছে।');
+      setAlertDialog({
+        isOpen: true,
+        type: 'error',
+        title: 'ত্রুটি!',
+        message: 'বিষয় মুছে ফেলতে ত্রুটি হয়েছে।'
+      });
     }
+  };
+
+  // Generate next sequential subject code
+  const generateNextSubjectCode = (): string => {
+    if (!subjects || subjects.length === 0) {
+      return '101'; // Start from 101 if no subjects exist
+    }
+
+    // Extract numeric codes from existing subjects
+    const numericCodes = subjects
+      .map(sub => {
+        const code = sub.code || '';
+        // Extract numeric part (could be pure number like "101" or with prefix like "BAN101")
+        const numericMatch = code.match(/\d+/);
+        return numericMatch ? parseInt(numericMatch[0], 10) : null;
+      })
+      .filter((num): num is number => num !== null && num >= 100 && num < 10000); // Filter valid codes (100-9999)
+
+    if (numericCodes.length === 0) {
+      return '101'; // Default start if no valid codes found
+    }
+
+    // Find the highest code
+    const highestCode = Math.max(...numericCodes);
+    
+    // Generate next sequential code
+    const nextCode = highestCode + 1;
+    
+    // Return as 3-digit string (101, 102, 103...)
+    return nextCode.toString().padStart(3, '0');
   };
 
   // Open edit dialog with subject data
@@ -306,7 +400,7 @@ function SubjectsPage() {
       nameEn: subject.nameEn || '',
       code: subject.code || '',
       teacherName: subject.teacherName || '',
-      selectedClass: subject.classes?.[0] || '',
+      selectedClasses: subject.classes || [],
       type: subject.type || 'মূল',
       description: subject.description || '',
       totalMarks: (subject.totalMarks !== undefined) ? subject.totalMarks : 100
@@ -322,16 +416,28 @@ function SubjectsPage() {
 
   // Reset form
   const resetForm = () => {
+    const nextCode = generateNextSubjectCode();
     setSubjectForm({
       name: '',
       nameEn: '',
-      code: '',
+      code: nextCode, // Auto-generate next sequential code
       teacherName: '',
-      selectedClass: '',
+      selectedClasses: [],
       type: 'মূল' as 'মূল' | 'ধর্মীয়' | 'ঐচ্ছিক',
       description: '',
       totalMarks: 100
     });
+    setIsClassDropdownOpen(false);
+  };
+
+  // Handle class selection
+  const handleClassToggle = (className: string) => {
+    setSubjectForm(prev => ({
+      ...prev,
+      selectedClasses: prev.selectedClasses.includes(className)
+        ? prev.selectedClasses.filter(c => c !== className)
+        : [...prev.selectedClasses, className]
+    }));
   };
 
   // Filter subjects based on search
@@ -369,17 +475,20 @@ function SubjectsPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: true },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: true },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -443,8 +552,21 @@ function SubjectsPage() {
                   />
                 </div>
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">{user?.email?.charAt(0).toUpperCase()}</span>
+                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                  {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                    <img
+                      src={(userData as any)?.photoURL || user?.photoURL || ''}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => {
+                        setImageError(true);
+                      }}
+                    />
+                  ) : (
+                    <span className="text-white font-medium text-sm">
+                      {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -641,13 +763,27 @@ function SubjectsPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     কোড *
                   </label>
-                  <input
-                    type="text"
-                    value={subjectForm.code}
-                    onChange={(e) => setSubjectForm({...subjectForm, code: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="MATH101"
-                  />
+                  <div className="flex space-x-2">
+                    <input
+                      type="text"
+                      value={subjectForm.code}
+                      onChange={(e) => setSubjectForm({...subjectForm, code: e.target.value})}
+                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="101"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextCode = generateNextSubjectCode();
+                        setSubjectForm({...subjectForm, code: nextCode});
+                      }}
+                      className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 text-sm font-medium whitespace-nowrap"
+                      title="পরবর্তী ক্রমিক কোড জেনারেট করুন"
+                    >
+                      Auto
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">সিরিয়াল: 101, 102, 103, 104... (Auto বাটনে ক্লিক করুন)</p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -664,29 +800,73 @@ function SubjectsPage() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
+                <div className="relative">
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     ক্লাস নির্বাচন করুন *
                   </label>
-                  <select
-                    value={subjectForm.selectedClass}
-                    onChange={(e) => setSubjectForm({...subjectForm, selectedClass: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    disabled={loadingClasses}
-                  >
-                    <option value="">ক্লাস নির্বাচন করুন</option>
-                    {loadingClasses ? (
-                      <option disabled>ক্লাস লোড হচ্ছে...</option>
-                    ) : classes.length === 0 ? (
-                      <option disabled>কোনো ক্লাস পাওয়া যায়নি</option>
-                    ) : (
-                      classes.map((classItem) => (
-                        <option key={classItem.classId} value={classItem.className}>
-                          {classItem.className} {classItem.section ? `(${classItem.section})` : ''}
-                        </option>
-                      ))
+                  <div className="relative class-dropdown">
+                    <button
+                      type="button"
+                      onClick={() => setIsClassDropdownOpen(!isClassDropdownOpen)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-left flex items-center justify-between"
+                      disabled={loadingClasses}
+                    >
+                      <span className="text-gray-700">
+                        {subjectForm.selectedClasses.length === 0
+                          ? 'ক্লাস নির্বাচন করুন'
+                          : `${subjectForm.selectedClasses.length} টি ক্লাস নির্বাচিত`
+                        }
+                      </span>
+                      <ChevronDown className="w-4 h-4 text-gray-400" />
+                    </button>
+
+                    {isClassDropdownOpen && (
+                      <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                        {loadingClasses ? (
+                          <div className="px-3 py-2 text-gray-500">ক্লাস লোড হচ্ছে...</div>
+                        ) : classes.length === 0 ? (
+                          <div className="px-3 py-2 text-gray-500">কোনো ক্লাস পাওয়া যায়নি</div>
+                        ) : (
+                          classes.map((classItem) => (
+                            <div
+                              key={classItem.classId}
+                              className="px-3 py-2 hover:bg-gray-50 cursor-pointer flex items-center"
+                              onClick={() => handleClassToggle(classItem.className)}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={subjectForm.selectedClasses.includes(classItem.className)}
+                                onChange={() => {}} // Handled by onClick
+                                className="mr-2"
+                              />
+                              <span className="text-sm">
+                                {classItem.className} {classItem.section ? `(${classItem.section})` : ''}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     )}
-                  </select>
+                  </div>
+                  {subjectForm.selectedClasses.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {subjectForm.selectedClasses.map((className) => (
+                        <span
+                          key={className}
+                          className="inline-flex items-center px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full"
+                        >
+                          {className}
+                          <button
+                            type="button"
+                            onClick={() => handleClassToggle(className)}
+                            className="ml-1 text-blue-600 hover:text-blue-800"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -840,29 +1020,73 @@ function SubjectsPage() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
+                <div className="relative">
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     ক্লাস নির্বাচন করুন *
                   </label>
-                  <select
-                    value={subjectForm.selectedClass}
-                    onChange={(e) => setSubjectForm({...subjectForm, selectedClass: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    disabled={loadingClasses}
-                  >
-                    <option value="">ক্লাস নির্বাচন করুন</option>
-                    {loadingClasses ? (
-                      <option disabled>ক্লাস লোড হচ্ছে...</option>
-                    ) : classes.length === 0 ? (
-                      <option disabled>কোনো ক্লাস পাওয়া যায়নি</option>
-                    ) : (
-                      classes.map((classItem) => (
-                        <option key={classItem.classId} value={classItem.className}>
-                          {classItem.className} {classItem.section ? `(${classItem.section})` : ''}
-                        </option>
-                      ))
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setIsClassDropdownOpen(!isClassDropdownOpen)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-left flex items-center justify-between"
+                      disabled={loadingClasses}
+                    >
+                      <span className="text-gray-700">
+                        {subjectForm.selectedClasses.length === 0
+                          ? 'ক্লাস নির্বাচন করুন'
+                          : `${subjectForm.selectedClasses.length} টি ক্লাস নির্বাচিত`
+                        }
+                      </span>
+                      <ChevronDown className="w-4 h-4 text-gray-400" />
+                    </button>
+
+                    {isClassDropdownOpen && (
+                      <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                        {loadingClasses ? (
+                          <div className="px-3 py-2 text-gray-500">ক্লাস লোড হচ্ছে...</div>
+                        ) : classes.length === 0 ? (
+                          <div className="px-3 py-2 text-gray-500">কোনো ক্লাস পাওয়া যায়নি</div>
+                        ) : (
+                          classes.map((classItem) => (
+                            <div
+                              key={classItem.classId}
+                              className="px-3 py-2 hover:bg-gray-50 cursor-pointer flex items-center"
+                              onClick={() => handleClassToggle(classItem.className)}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={subjectForm.selectedClasses.includes(classItem.className)}
+                                onChange={() => {}} // Handled by onClick
+                                className="mr-2"
+                              />
+                              <span className="text-sm">
+                                {classItem.className} {classItem.section ? `(${classItem.section})` : ''}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     )}
-                  </select>
+                  </div>
+                  {subjectForm.selectedClasses.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {subjectForm.selectedClasses.map((className) => (
+                        <span
+                          key={className}
+                          className="inline-flex items-center px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full"
+                        >
+                          {className}
+                          <button
+                            type="button"
+                            onClick={() => handleClassToggle(className)}
+                            className="ml-1 text-blue-600 hover:text-blue-800"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -997,6 +1221,16 @@ function SubjectsPage() {
           </div>
         </div>
       )}
+
+      {/* Alert Dialog */}
+      <AlertDialog
+        isOpen={alertDialog.isOpen}
+        onClose={() => setAlertDialog({ ...alertDialog, isOpen: false })}
+        type={alertDialog.type}
+        title={alertDialog.title}
+        message={alertDialog.message}
+        confirmText="ঠিক আছে"
+      />
     </div>
   );
 }

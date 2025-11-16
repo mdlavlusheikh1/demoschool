@@ -88,14 +88,30 @@ const AlertDialog: React.FC<AlertDialogProps> = ({
 
   return (
     <div
-      className="fixed inset-0 bg-black/40 backdrop-blur-md flex items-center justify-center z-[9999] p-4 animate-fadeIn"
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[9999] p-4"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+      }}
       onClick={(e) => {
         if (e.target === e.currentTarget) {
           onClose();
         }
       }}
     >
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md transform transition-all animate-scaleIn">
+      <div 
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-md animate-modal-enter"
+        style={{
+          maxWidth: '28rem',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Close button */}
         <div className="absolute top-4 right-4">
           <button

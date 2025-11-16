@@ -4,15 +4,21 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { User, onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { inventoryQueries, InventoryItem } from '@/lib/database-queries';
+import { inventoryQueries, InventoryItem, settingsQueries } from '@/lib/database-queries';
 import { SCHOOL_ID } from '@/lib/constants';
 import {
   Home, Users, BookOpen, ClipboardList, Calendar, Settings, LogOut, Menu, X,
   UserCheck, GraduationCap, Building, CreditCard, TrendingUp, Search, Bell,
-  Package, AlertTriangle, CheckCircle, Edit, Trash2, Eye, RefreshCw, ArrowLeft
+  Package, AlertTriangle, CheckCircle, Edit, Trash2, Eye, RefreshCw,   ArrowLeft,
+  Globe, Download, FileText, Loader2, BookOpen as BookOpenIcon, Award, MessageSquare,
+  Gift, Sparkles, Users as UsersIcon, AlertCircle as AlertCircleIcon
 } from 'lucide-react';
 import Modal from '@/components/ui/modal';
+import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType } from 'docx';
+// @ts-ignore - file-saver types not available
+import { saveAs } from 'file-saver';
 
 function AllStockPage() {
   const [user, setUser] = useState<User | null>(null);
@@ -24,7 +30,16 @@ function AllStockPage() {
   const [selectedCategory, setSelectedCategory] = useState('সব');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<InventoryItem | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [schoolSettings, setSchoolSettings] = useState<any>(null);
+  const [imageError, setImageError] = useState(false);
   const router = useRouter();
+  const { userData } = useAuth();
+
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
 
   // Load inventory data
   useEffect(() => {
@@ -32,6 +47,7 @@ function AllStockPage() {
       if (user) {
         setUser(user);
         loadInventoryData();
+        loadSchoolSettings();
       } else {
         router.push('/auth/login');
       }
@@ -39,6 +55,18 @@ function AllStockPage() {
     });
     return () => unsubscribe();
   }, [router]);
+
+  // Load school settings
+  const loadSchoolSettings = async () => {
+    try {
+      const settings = await settingsQueries.getSettings();
+      if (settings) {
+        setSchoolSettings(settings);
+      }
+    } catch (error) {
+      console.error('Error loading school settings:', error);
+    }
+  };
 
   // Load inventory data
   const loadInventoryData = async () => {
@@ -146,6 +174,371 @@ function AllStockPage() {
     setItemToDelete(null);
   };
 
+  // Helper function to escape HTML
+  const escapeHtml = (text: string) => {
+    if (!text) return '';
+    const map: any = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;'
+    };
+    return text.replace(/[&<>"']/g, (m) => map[m]);
+  };
+
+  // Helper function to format date
+  const formatDate = (date: any) => {
+    if (!date) return '-';
+    try {
+      if (date.toDate) {
+        return date.toDate().toLocaleDateString('bn-BD');
+      }
+      if (typeof date === 'string') {
+        return new Date(date).toLocaleDateString('bn-BD');
+      }
+      return new Date(date).toLocaleDateString('bn-BD');
+    } catch (error) {
+      return '-';
+    }
+  };
+
+  // Export to PDF
+  const exportToPDF = async () => {
+    try {
+      setIsExporting(true);
+      
+      // Always load fresh settings before export to ensure latest data
+      const settings = await settingsQueries.getSettings();
+      if (settings) setSchoolSettings(settings);
+      
+      // Get real school data from settings
+      const schoolName = settings?.schoolName || 'ইকরা নূরানী একাডেমি';
+      const schoolAddress = settings?.schoolAddress || 'ঢাকা, বাংলাদেশ';
+      const schoolPhone = settings?.schoolPhone || '০১৭১১১১১১১১';
+      const schoolEmail = settings?.schoolEmail || 'info@ikranurani.edu';
+      const establishmentYear = (settings as any)?.establishmentYear || '';
+      
+      console.log('Exporting PDF with settings:', { schoolName, schoolAddress, schoolPhone, schoolEmail, establishmentYear });
+
+      const currentDate = new Date().toLocaleDateString('bn-BD');
+      
+      // Calculate total value
+      const totalValue = filteredItems.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
+      
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        alert('পপআপ ব্লকার ব্যবহার করা হচ্ছে। অনুগ্রহ করে পপআপ অনুমতি দিন।');
+        return;
+      }
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html dir="rtl" lang="bn">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>সব মজুদ - রিপোর্ট</title>
+            <style>
+                @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;500;600;700&display=swap');
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }
+                body {
+                    font-family: 'Noto Sans Bengali', 'Arial', sans-serif;
+                    padding: 20px;
+                    direction: rtl;
+                    background-color: #fff;
+                }
+                .school-header {
+                    text-align: center;
+                    margin-bottom: 20px;
+                    padding-bottom: 15px;
+                    border-bottom: 2px solid #2563eb;
+                }
+                .school-name {
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: #1e40af;
+                    margin-bottom: 8px;
+                }
+                .school-info {
+                    font-size: 14px;
+                    color: #4b5563;
+                    margin: 4px 0;
+                }
+                .report-header {
+                    text-align: center;
+                    margin-bottom: 20px;
+                    padding: 15px;
+                    background-color: #eff6ff;
+                    border-radius: 8px;
+                }
+                .report-title {
+                    font-size: 20px;
+                    font-weight: bold;
+                    color: #1e40af;
+                    margin-bottom: 8px;
+                }
+                .report-info {
+                    font-size: 14px;
+                    color: #4b5563;
+                }
+                .summary-box {
+                    background-color: #f0fdf4;
+                    border: 2px solid #22c55e;
+                    border-radius: 8px;
+                    padding: 12px;
+                    margin-bottom: 20px;
+                    text-align: center;
+                    font-size: 16px;
+                    color: #166534;
+                }
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 10px;
+                    font-size: 11px;
+                    table-layout: fixed;
+                }
+                th, td {
+                    border: 1px solid #d1d5db;
+                    padding: 6px 4px;
+                    text-align: center;
+                    word-wrap: break-word;
+                    vertical-align: middle;
+                }
+                th {
+                    background-color: #dbeafe;
+                    font-weight: bold;
+                    color: #1e40af;
+                    font-size: 11px;
+                }
+                td {
+                    font-size: 11px;
+                }
+                tr:nth-child(even) {
+                    background-color: #f9fafb;
+                }
+                .amount {
+                    font-weight: bold;
+                    color: #059669;
+                }
+                @media print {
+                    body { padding: 10px; }
+                    .no-print { display: none; }
+                }
+                @page {
+                    size: A4 landscape;
+                    margin: 0.3in;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="school-header">
+                <div class="school-name">${escapeHtml(schoolName)}</div>
+                <div class="school-info">${escapeHtml(schoolAddress)}</div>
+                ${establishmentYear ? `<div class="school-info">প্রতিষ্ঠার সাল: ${escapeHtml(establishmentYear)}</div>` : ''}
+                <div class="school-info">ফোন: ${escapeHtml(schoolPhone)} | ইমেইল: ${escapeHtml(schoolEmail)}</div>
+            </div>
+
+            <div class="report-header">
+                <div class="report-title">সব মজুদ</div>
+                <div class="report-info">
+                    রিপোর্ট তৈরির তারিখ: ${currentDate} | মোট পণ্য: ${filteredItems.length} টি
+                </div>
+            </div>
+
+            <div class="summary-box">
+                <strong>মোট পণ্যের মূল্য: ৳${totalValue.toLocaleString('bn-BD')}</strong>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 5%;">ক্রম</th>
+                        <th style="width: 18%;">পণ্যের নাম</th>
+                        <th style="width: 12%;">বিভাগ</th>
+                        <th style="width: 10%;">পরিমাণ</th>
+                        <th style="width: 10%;">দাম (৳)</th>
+                        <th style="width: 10%;">মোট মূল্য (৳)</th>
+                        <th style="width: 10%;">ক্লাস</th>
+                        <th style="width: 10%;">স্ট্যাটাস</th>
+                        <th style="width: 10%;">শেষ আপডেট</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${filteredItems.map((item, index) => {
+                      const itemTotal = item.quantity * item.unitPrice;
+                      return `
+                        <tr>
+                            <td>${index + 1}</td>
+                            <td>${escapeHtml(item.name)}${item.nameEn ? `<br><small>${escapeHtml(item.nameEn)}</small>` : ''}</td>
+                            <td>${escapeHtml(item.category)}</td>
+                            <td>${item.quantity} ${escapeHtml(item.unit)}</td>
+                            <td class="amount">৳${item.unitPrice.toLocaleString('bn-BD')}</td>
+                            <td class="amount">৳${itemTotal.toLocaleString('bn-BD')}</td>
+                            <td>${escapeHtml(item.assignedClass || 'কোনো ক্লাস নেই')}</td>
+                            <td>${getStatusInBengali(item)}</td>
+                            <td>${formatDate(item.updatedAt)}</td>
+                        </tr>
+                      `;
+                    }).join('')}
+                </tbody>
+            </table>
+        </body>
+        </html>
+      `;
+
+      printWindow.document.write(htmlContent);
+      printWindow.document.close();
+
+      printWindow.onload = () => {
+        setTimeout(() => {
+          printWindow.print();
+        }, 250);
+      };
+    } catch (error) {
+      console.error('PDF export error:', error);
+      alert('PDF এক্সপোর্ট করতে সমস্যা হয়েছে');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Export to DOCX
+  const exportToDOCX = async () => {
+    try {
+      setIsExporting(true);
+      
+      // Always load fresh settings before export to ensure latest data
+      const settings = await settingsQueries.getSettings();
+      if (settings) setSchoolSettings(settings);
+      
+      // Get real school data from settings
+      const schoolName = settings?.schoolName || 'ইকরা নূরানী একাডেমি';
+      const schoolAddress = settings?.schoolAddress || 'ঢাকা, বাংলাদেশ';
+      const schoolPhone = settings?.schoolPhone || '০১৭১১১১১১১১';
+      const schoolEmail = settings?.schoolEmail || 'info@ikranurani.edu';
+      const establishmentYear = (settings as any)?.establishmentYear || '';
+      
+      console.log('Exporting DOCX with settings:', { schoolName, schoolAddress, schoolPhone, schoolEmail, establishmentYear });
+
+      // Calculate total value
+      const totalValue = filteredItems.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
+
+      const doc = new Document({
+        sections: [{
+          properties: {},
+          children: [
+            // School info
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: schoolName,
+                  bold: true,
+                  size: 32
+                })
+              ],
+              alignment: 'center'
+            }),
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: `${schoolAddress}${establishmentYear ? ` | প্রতিষ্ঠার সাল: ${establishmentYear}` : ''} | ফোন: ${schoolPhone} | ইমেইল: ${schoolEmail}`,
+                  size: 20
+                })
+              ],
+              alignment: 'center'
+            }),
+            new Paragraph({ children: [new TextRun({ text: '' })] }),
+            
+            // Title
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: 'সব মজুদ',
+                  bold: true,
+                  size: 32
+                })
+              ],
+              alignment: 'center'
+            }),
+            
+            // Date and summary
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: `তারিখ: ${new Date().toLocaleDateString('bn-BD')} | মোট: ${filteredItems.length} টি | মোট মূল্য: ৳${totalValue.toLocaleString('bn-BD')}`,
+                  size: 20
+                })
+              ],
+              alignment: 'center'
+            }),
+            
+            new Paragraph({ children: [new TextRun({ text: '' })] }),
+            
+            // Table
+            new Table({
+              width: {
+                size: 100,
+                type: WidthType.PERCENTAGE
+              },
+              rows: [
+                // Header row
+                new TableRow({
+                  children: [
+                    new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'ক্রম', bold: true })] })] }),
+                    new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'পণ্যের নাম', bold: true })] })] }),
+                    new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'বিভাগ', bold: true })] })] }),
+                    new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'পরিমাণ', bold: true })] })] }),
+                    new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'দাম', bold: true })] })] }),
+                    new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'মোট মূল্য', bold: true })] })] }),
+                    new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'ক্লাস', bold: true })] })] }),
+                    new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'স্ট্যাটাস', bold: true })] })] }),
+                    new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'শেষ আপডেট', bold: true })] })] })
+                  ]
+                }),
+                
+                // Data rows
+                ...filteredItems.map((item, index) => {
+                  const itemTotal = item.quantity * item.unitPrice;
+                  return new TableRow({
+                    children: [
+                      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(index + 1) })] })] }),
+                      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: item.name + (item.nameEn ? `\n${item.nameEn}` : '') })] })] }),
+                      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: item.category })] })] }),
+                      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `${item.quantity} ${item.unit}` })] })] }),
+                      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `৳${item.unitPrice.toLocaleString('bn-BD')}` })] })] }),
+                      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `৳${itemTotal.toLocaleString('bn-BD')}` })] })] }),
+                      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: item.assignedClass || 'কোনো ক্লাস নেই' })] })] }),
+                      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: getStatusInBengali(item) })] })] }),
+                      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: formatDate(item.updatedAt) })] })] })
+                    ]
+                  });
+                })
+              ]
+            })
+          ]
+        }]
+      });
+
+      const buffer = await Packer.toBuffer(doc);
+      const blob = new Blob([new Uint8Array(buffer)], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      const fileName = `সব_মজুদ_${new Date().toISOString().split('T')[0]}.docx`;
+      saveAs(blob, fileName);
+      
+      console.log('✅ DOCX exported successfully');
+    } catch (error) {
+      console.error('DOCX export error:', error);
+      alert('DOCX এক্সপোর্ট করতে সমস্যা হয়েছে');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
@@ -160,17 +553,20 @@ function AllStockPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircleIcon, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: true },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -235,8 +631,21 @@ function AllStockPage() {
                   />
                 </div>
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">{user?.email?.charAt(0).toUpperCase()}</span>
+                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                  {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                    <img
+                      src={(userData as any)?.photoURL || user?.photoURL || ''}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => {
+                        setImageError(true);
+                      }}
+                    />
+                  ) : (
+                    <span className="text-white font-medium text-sm">
+                      {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -276,9 +685,31 @@ function AllStockPage() {
                 ))}
               </div>
               <div className="flex space-x-2">
-                <button className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2">
-                  <Package className="w-4 h-4" />
-                  <span>পণ্য এক্সপোর্ট</span>
+                <button
+                  onClick={exportToPDF}
+                  disabled={isExporting || filteredItems.length === 0}
+                  className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors flex items-center space-x-2 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="PDF হিসেবে এক্সপোর্ট করুন"
+                >
+                  {isExporting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <FileText className="w-4 h-4" />
+                  )}
+                  <span>PDF</span>
+                </button>
+                <button
+                  onClick={exportToDOCX}
+                  disabled={isExporting || filteredItems.length === 0}
+                  className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors flex items-center space-x-2 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="DOCX হিসেবে এক্সপোর্ট করুন"
+                >
+                  {isExporting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Download className="w-4 h-4" />
+                  )}
+                  <span>DOCX</span>
                 </button>
               </div>
             </div>

@@ -6,6 +6,7 @@ import { auth, db } from '@/lib/firebase';
 import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, collection, onSnapshot, query, where } from 'firebase/firestore';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import { useAuth } from '@/contexts/AuthContext';
 import { examQueries } from '@/lib/database-queries';
 import { feeQueries } from '@/lib/queries/fee-queries';
 import { studentQueries } from '@/lib/queries/student-queries';
@@ -37,7 +38,11 @@ import {
   FileText,
   Award,
   Building,
-  Package
+  Package,
+  Globe,
+  MessageSquare,
+  Sparkles,
+  Gift
 } from 'lucide-react';
 
 interface ClassFee {
@@ -113,12 +118,21 @@ function FeesPage() {
   const [studentsForCollection, setStudentsForCollection] = useState<any[]>([]);
   const [loadingStudents, setLoadingStudents] = useState(false);
 
+  // Exam selection for focused view
+  const [selectedExam, setSelectedExam] = useState<string>('');
+
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
   const router = useRouter();
 
   useEffect(() => {
+    if (!auth) {
+      console.error('Firebase auth is not initialized');
+      router.push('/auth/login');
+      setLoading(false);
+      return;
+    }
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUser(user);
@@ -497,14 +511,17 @@ function FeesPage() {
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: true },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
     { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Bell, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -554,7 +571,7 @@ function FeesPage() {
           ))}
 
           <button
-            onClick={() => auth.signOut()}
+            onClick={() => auth?.signOut()}
             className="flex items-center w-full px-6 py-2 mt-4 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
           >
             <LogOut className="w-4 h-4 mr-3" />
@@ -764,6 +781,29 @@ function FeesPage() {
                   </div>
                 )}
 
+                {/* All Classes Display */}
+                {activeTab === 'exam' && availableClasses.length > 0 && (
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mt-6">
+                    <h2 className="text-xl font-semibold text-gray-900 mb-4">সকল ক্লাস</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {availableClasses.map((className) => (
+                        <div key={className} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                          <div className="flex items-center justify-between mb-2">
+                            <h3 className="text-lg font-medium text-gray-900">{className}</h3>
+                            <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-800">
+                              সক্রিয়
+                            </span>
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            <p>ক্লাস নাম: {className}</p>
+                            <p>স্ট্যাটাস: সক্রিয়</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Admission Fees Tab */}
                 {activeTab === 'admission' && (
                   <div>
@@ -853,6 +893,32 @@ function FeesPage() {
                       </div>
                     </div>
 
+                    {/* Exam Selection Dropdown */}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
+                      <h2 className="text-xl font-semibold text-gray-900 mb-4">পরীক্ষা নির্বাচন করুন</h2>
+                      <div className="flex items-center space-x-4">
+                        <label htmlFor="examSelect" className="text-sm font-medium text-gray-700">
+                          পরীক্ষা নির্বাচন করুন:
+                        </label>
+                        <select
+                          id="examSelect"
+                          value={selectedExam}
+                          onChange={(e) => setSelectedExam(e.target.value)}
+                          className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">সকল পরীক্ষা</option>
+                          {existingExams.map((exam) => (
+                            <option key={exam.id} value={exam.id}>{exam.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      {selectedExam && (
+                        <p className="text-sm text-gray-600 mt-2">
+                          নির্বাচিত পরীক্ষা: <strong>{existingExams.find(e => e.id === selectedExam)?.name}</strong> - এই পরীক্ষার জন্য ক্লাস অনুসারে ফি নির্ধারণ করুন।
+                        </p>
+                      )}
+                    </div>
+
                     {loadingExams ? (
                       <div className="text-center py-8">
                         <Loader2 className="w-8 h-8 animate-spin mx-auto mb-3 text-blue-600" />
@@ -866,30 +932,46 @@ function FeesPage() {
                       </div>
                     ) : (
                       <div className="space-y-6">
-                        {/* Group exams by exam type */}
-                        {[
-                          { types: ['প্রথম সাময়িক'], label: 'প্রথম সাময়িক পরীক্ষা', color: 'bg-blue-50 border-blue-200' },
-                          { types: ['দ্বিতীয় সাময়িক'], label: 'দ্বিতীয় সাময়িক পরীক্ষা', color: 'bg-green-50 border-green-200' },
-                          { types: ['তৃতীয় সাময়িক'], label: 'তৃতীয় সাময়িক পরীক্ষা', color: 'bg-teal-50 border-teal-200' },
-                          { types: ['সাময়িক'], label: 'সাময়িক পরীক্ষা', color: 'bg-cyan-50 border-cyan-200' },
-                          { types: ['বার্ষিক'], label: 'বার্ষিক পরীক্ষা', color: 'bg-purple-50 border-purple-200' },
-                          { types: ['মাসিক'], label: 'মাসিক পরীক্ষা', color: 'bg-indigo-50 border-indigo-200' },
-                          { types: ['নির্বাচনী'], label: 'নির্বাচনী পরীক্ষা', color: 'bg-orange-50 border-orange-200' },
-                          { types: ['পরীক্ষামূলক', 'অন্যান্য'], label: 'অন্যান্য পরীক্ষা', color: 'bg-gray-50 border-gray-200' }
-                        ].map(({ types, label, color }) => {
-                          const examsOfType = existingExams.filter(exam => exam.examType && types.includes(exam.examType));
+                        {/* Define examsToShow outside */}
+                        {(() => {
+                          const examsToShow = selectedExam ? existingExams.filter(exam => exam.id === selectedExam) : existingExams;
 
-                          if (examsOfType.length === 0) return null;
+                          if (selectedExam && examsToShow.length === 0) {
+                            return (
+                              <div className="text-center py-8 text-gray-500">
+                                <Award className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                                <p className="text-lg font-medium">পরীক্ষা পাওয়া যায়নি</p>
+                                <p className="text-sm">নির্বাচিত পরীক্ষা খুঁজে পাওয়া যায়নি</p>
+                              </div>
+                            );
+                          }
 
                           return (
-                            <div key={label} className={`border rounded-lg p-4 ${color}`}>
-                              <h4 className="text-md font-semibold text-gray-900 mb-3 flex items-center">
-                                <Award className="w-5 h-5 mr-2" />
-                                {label} ({examsOfType.length})
-                              </h4>
+                            <>
+                              {/* Group exams by exam type */}
+                              {[
+                                { types: ['প্রথম সাময়িক'], label: 'প্রথম সাময়িক পরীক্ষা', color: 'bg-blue-50 border-blue-200' },
+                                { types: ['দ্বিতীয় সাময়িক'], label: 'দ্বিতীয় সাময়িক পরীক্ষা', color: 'bg-green-50 border-green-200' },
+                                { types: ['তৃতীয় সাময়িক'], label: 'তৃতীয় সাময়িক পরীক্ষা', color: 'bg-teal-50 border-teal-200' },
+                                { types: ['সাময়িক'], label: 'সাময়িক পরীক্ষা', color: 'bg-cyan-50 border-cyan-200' },
+                                { types: ['বার্ষিক'], label: 'বার্ষিক পরীক্ষা', color: 'bg-purple-50 border-purple-200' },
+                                { types: ['মাসিক'], label: 'মাসিক পরীক্ষা', color: 'bg-indigo-50 border-indigo-200' },
+                                { types: ['নির্বাচনী'], label: 'নির্বাচনী পরীক্ষা', color: 'bg-orange-50 border-orange-200' },
+                                { types: ['পরীক্ষামূলক', 'অন্যান্য'], label: 'অন্যান্য পরীক্ষা', color: 'bg-gray-50 border-gray-200' }
+                              ].map(({ types, label, color }) => {
+                                const examsOfType = examsToShow.filter(exam => exam.examType && types.includes(exam.examType));
 
-                              <div className="space-y-3">
-                                {examsOfType.map((exam) => (
+                                if (examsOfType.length === 0) return null;
+
+                                return (
+                                  <div key={label} className={`border rounded-lg p-4 ${color}`}>
+                                    <h4 className="text-md font-semibold text-gray-900 mb-3 flex items-center">
+                                      <Award className="w-5 h-5 mr-2" />
+                                      {label} ({examsOfType.length})
+                                    </h4>
+
+                                    <div className="space-y-3">
+                                      {examsOfType.map((exam) => (
                                   <div key={exam.id} className="bg-white border border-gray-200 rounded-lg p-4">
                                     <div className="flex items-center justify-between">
                                       <div className="flex-1">
@@ -933,6 +1015,40 @@ function FeesPage() {
                                             >
                                               ফি সংগ্রহ করুন
                                             </button>
+                                          </div>
+                                        </div>
+
+                                        {/* Fee Amount Input Fields */}
+                                        <div className="mt-3">
+                                          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                                            {availableClasses.map((className) => {
+                                              const currentFee = examClassFees[exam.id]?.[className] || 0;
+                                              return (
+                                                <div key={className} className="flex items-center space-x-2">
+                                                  <label className="text-xs text-gray-600 min-w-0 flex-1">{className}:</label>
+                                                  <div className="flex items-center space-x-1">
+                                                    <input
+                                                      type="number"
+                                                      value={currentFee}
+                                                      onChange={(e) => {
+                                                        const amount = parseInt(e.target.value) || 0;
+                                                        setExamClassFees(prev => ({
+                                                          ...prev,
+                                                          [exam.id]: {
+                                                            ...prev[exam.id],
+                                                            [className]: amount
+                                                          }
+                                                        }));
+                                                      }}
+                                                      className="w-16 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                                      placeholder="0"
+                                                      min="0"
+                                                    />
+                                                    <span className="text-xs text-gray-500">৳</span>
+                                                  </div>
+                                                </div>
+                                              );
+                                            })}
                                           </div>
                                         </div>
 
@@ -987,7 +1103,8 @@ function FeesPage() {
 
                         {/* Show exams without examType or unmatched types */}
                         {(() => {
-                          const unmatchedExams = existingExams.filter(exam =>
+                          const examsToShow = selectedExam ? existingExams.filter(exam => exam.id === selectedExam) : existingExams;
+                          const unmatchedExams = examsToShow.filter(exam =>
                             !exam.examType ||
                             ![
                               'প্রথম সাময়িক', 'দ্বিতীয় সাময়িক', 'তৃতীয় সাময়িক', 'সাময়িক',
@@ -1058,6 +1175,63 @@ function FeesPage() {
                                     </div>
                                   </div>
                                 ))}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                            </>
+                          );
+                        })()}
+
+                        {/* Dedicated section for selected exam */}
+                        {(() => {
+                          const examsToShow = selectedExam ? existingExams.filter(exam => exam.id === selectedExam) : existingExams;
+                          return selectedExam && examsToShow.length > 0 && (
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                              <div className="flex items-center justify-between mb-4">
+                                <h2 className="text-xl font-semibold text-gray-900">নির্বাচিত পরীক্ষার জন্য ক্লাস অনুসারে ফি নির্ধারণ</h2>
+                                <button
+                                  onClick={async () => {
+                                    await saveExamClassFees();
+                                  }}
+                                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center space-x-2"
+                                >
+                                  <Save className="w-4 h-4" />
+                                  <span>সংরক্ষণ করুন</span>
+                                </button>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                {availableClasses.map((className) => {
+                                  const currentFee = examClassFees[selectedExam]?.[className] || 0;
+                                  return (
+                                    <div key={className} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                                      <div className="flex items-center justify-between mb-2">
+                                        <h3 className="text-lg font-medium text-gray-900">{className}</h3>
+                                        <span className="text-sm text-gray-600">ক্লাস</span>
+                                      </div>
+                                      <div className="flex items-center space-x-2">
+                                        <input
+                                          type="number"
+                                          value={currentFee}
+                                          onChange={(e) => {
+                                            const amount = parseInt(e.target.value) || 0;
+                                            setExamClassFees(prev => ({
+                                              ...prev,
+                                              [selectedExam]: {
+                                                ...prev[selectedExam],
+                                                [className]: amount
+                                              }
+                                            }));
+                                          }}
+                                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                          placeholder="ফি পরিমাণ"
+                                          min="0"
+                                        />
+                                        <span className="text-gray-600">৳</span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
                           );
@@ -1368,8 +1542,49 @@ function FeesPage() {
   );
 }
 
+
 export default function FeesPageWrapper() {
+  const { userData, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    // Block unauthorized access - only admin and super_admin can access
+    if (!loading && userData?.role) {
+      const role = userData.role;
+      
+      if (role === 'teacher') {
+        router.push('/teacher/accounting/fees');
+        return;
+      }
+      
+      if (role === 'parent') {
+        router.push('/parent/dashboard');
+        return;
+      }
+      
+      if (role === 'student') {
+        router.push('/student/dashboard');
+        return;
+      }
+      
+      // Only allow admin and super_admin
+      if (role !== 'admin' && role !== 'super_admin') {
+        router.push('/');
+        return;
+      }
+    }
+  }, [userData, loading, router]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
   return (
+
     <ProtectedRoute requireAuth={true}>
       <FeesPage />
     </ProtectedRoute>

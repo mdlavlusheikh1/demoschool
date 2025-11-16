@@ -25,16 +25,6 @@ function AdminTools() {
 
   const superAdminTools = [
     {
-      title: 'ব্যবহারকারী প্রমোশন',
-      description: 'যেকোনো ব্যবহারকারীকে সুপার অ্যাডমিন করুন',
-      icon: UserPlus,
-      href: '/admin/promote',
-      color: 'from-red-600 to-purple-600',
-      bgColor: 'bg-red-50',
-      textColor: 'text-red-700',
-      access: ['super_admin', 'teacher'] // Allow teacher with specific email
-    },
-    {
       title: 'সিস্টেম অ্যানালিটিক্স',
       description: 'সম্পূর্ণ সিস্টেমের পারফরমেন্স রিপোর্ট',
       icon: BarChart3,
@@ -67,16 +57,6 @@ function AdminTools() {
   ];
 
   const schoolAdminTools = [
-    {
-      title: 'ব্যবহারকারী অনুমোদন',
-      description: 'নতুন নিবন্ধনের অনুমোদন ও ব্যবস্থাপনা',
-      icon: Users,
-      href: '/admin/users',
-      color: 'from-blue-600 to-indigo-600',
-      bgColor: 'bg-blue-50',
-      textColor: 'text-blue-700',
-      access: ['super_admin', 'admin', 'school_admin']
-    },
     {
       title: 'উপস্থিতি রিপোর্ট',
       description: 'দৈনিক ও মাসিক উপস্থিতি বিশ্লেষণ',

@@ -59,29 +59,136 @@ export async function uploadMediaToImageKitAndFirebase(
         const { uploadTeacherPhoto } = await import('./imagekit-utils');
         imagekitFile = await uploadTeacherPhoto(file, userId, schoolId);
         break;
-      case 'school':
-        const { uploadSchoolLogo } = await import('./imagekit-utils');
-        imagekitFile = await uploadSchoolLogo(file, schoolId);
+      case 'school': {
+        // Use client-side upload for school logo (since this runs in browser)
+        const publicKeySchool = process.env.NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY;
+        if (!publicKeySchool) {
+          throw new Error('ImageKit public key not configured');
+        }
+
+        // Get authentication parameters
+        const authResponseSchool = await fetch('/api/imagekit');
+        if (!authResponseSchool.ok) {
+          const errorDataSchool = await authResponseSchool.json().catch(() => ({ message: 'ImageKit authentication failed' }));
+          throw new Error(errorDataSchool.message || 'Failed to get ImageKit authentication');
+        }
+
+        const authDataSchool = await authResponseSchool.json();
+        if (!authDataSchool.token || !authDataSchool.signature || !authDataSchool.expire) {
+          throw new Error('Invalid authentication parameters from server');
+        }
+
+        // Create FormData for upload
+        const uploadFormDataSchool = new FormData();
+        uploadFormDataSchool.append('file', file);
+        uploadFormDataSchool.append('fileName', `school-logo-${Date.now()}-${file.name}`);
+        uploadFormDataSchool.append('folder', `/school-management/school-logos/${schoolId}`);
+        uploadFormDataSchool.append('tags', ['school', schoolId, 'logo'].join(','));
+        uploadFormDataSchool.append('token', authDataSchool.token);
+        uploadFormDataSchool.append('expire', authDataSchool.expire.toString());
+        uploadFormDataSchool.append('signature', authDataSchool.signature);
+        uploadFormDataSchool.append('publicKey', publicKeySchool);
+
+        // Upload to ImageKit REST API
+        const uploadResponseSchool = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
+          method: 'POST',
+          body: uploadFormDataSchool,
+        });
+
+        if (!uploadResponseSchool.ok) {
+          const errorTextSchool = await uploadResponseSchool.text();
+          throw new Error(`ImageKit upload failed: ${errorTextSchool}`);
+        }
+
+        const uploadResultSchool = await uploadResponseSchool.json();
+
+        // Convert ImageKit response to ImageKitFile format
+        imagekitFile = {
+          fileId: uploadResultSchool.fileId,
+          name: uploadResultSchool.name,
+          url: uploadResultSchool.url,
+          thumbnailUrl: uploadResultSchool.thumbnailUrl || uploadResultSchool.url,
+          height: uploadResultSchool.height || 0,
+          width: uploadResultSchool.width || 0,
+          size: uploadResultSchool.size,
+          type: uploadResultSchool.fileType || file.type,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          AITags: uploadResultSchool.AITags || []
+        };
         break;
+      }
       case 'document':
         if (!userId) throw new Error('User ID is required for document uploads');
         const { uploadDocument } = await import('./imagekit-utils');
         imagekitFile = await uploadDocument(file, 'document', userId, schoolId);
         break;
-      case 'gallery':
-        imagekitFile = await uploadToImageKit({
-          file,
-          fileName: `gallery-${Date.now()}-${file.name}`,
-          folder: `/school-management/gallery/${schoolId}`,
-          tags: ['gallery', schoolId, ...(tags || [])]
+      case 'gallery': {
+        // Use client-side upload for gallery (since this runs in browser)
+        const publicKeyGallery = process.env.NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY;
+        if (!publicKeyGallery) {
+          throw new Error('ImageKit public key not configured');
+        }
+
+        // Get authentication parameters
+        const authResponseGallery = await fetch('/api/imagekit');
+        if (!authResponseGallery.ok) {
+          const errorDataGallery = await authResponseGallery.json().catch(() => ({ message: 'ImageKit authentication failed' }));
+          throw new Error(errorDataGallery.message || 'Failed to get ImageKit authentication');
+        }
+
+        const authDataGallery = await authResponseGallery.json();
+        if (!authDataGallery.token || !authDataGallery.signature || !authDataGallery.expire) {
+          throw new Error('Invalid authentication parameters from server');
+        }
+
+        // Create FormData for upload
+        const uploadFormDataGallery = new FormData();
+        uploadFormDataGallery.append('file', file);
+        uploadFormDataGallery.append('fileName', `gallery-${Date.now()}-${file.name}`);
+        uploadFormDataGallery.append('folder', `/school-management/gallery/${schoolId}`);
+        uploadFormDataGallery.append('tags', ['gallery', schoolId, ...(tags || [])].join(','));
+        uploadFormDataGallery.append('token', authDataGallery.token);
+        uploadFormDataGallery.append('expire', authDataGallery.expire.toString());
+        uploadFormDataGallery.append('signature', authDataGallery.signature);
+        uploadFormDataGallery.append('publicKey', publicKeyGallery);
+
+        // Upload to ImageKit REST API
+        const uploadResponseGallery = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
+          method: 'POST',
+          body: uploadFormDataGallery,
         });
+
+        if (!uploadResponseGallery.ok) {
+          const errorTextGallery = await uploadResponseGallery.text();
+          throw new Error(`ImageKit upload failed: ${errorTextGallery}`);
+        }
+
+        const uploadResultGallery = await uploadResponseGallery.json();
+
+        // Convert ImageKit response to ImageKitFile format
+        imagekitFile = {
+          fileId: uploadResultGallery.fileId,
+          name: uploadResultGallery.name,
+          url: uploadResultGallery.url,
+          thumbnailUrl: uploadResultGallery.thumbnailUrl || uploadResultGallery.url,
+          height: uploadResultGallery.height || 0,
+          width: uploadResultGallery.width || 0,
+          size: uploadResultGallery.size,
+          type: uploadResultGallery.fileType || file.type,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          AITags: uploadResultGallery.AITags || []
+        };
         break;
+      }
       default:
         throw new Error(`Unknown category: ${category}`);
     }
 
     // Create media record for Firebase
-    const mediaRecord: Omit<MediaRecord, 'id'> = {
+    // Filter out undefined values to prevent Firestore errors
+    const mediaRecord: any = {
       fileId: imagekitFile.fileId,
       name: imagekitFile.name,
       url: imagekitFile.url,
@@ -89,11 +196,8 @@ export async function uploadMediaToImageKitAndFirebase(
       type: imagekitFile.type.startsWith('image/') ? 'image' : 
             imagekitFile.type.startsWith('video/') ? 'video' : 'document',
       category,
-      userId,
       schoolId,
       size: imagekitFile.size,
-      width: imagekitFile.width,
-      height: imagekitFile.height,
       uploadedBy,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -101,9 +205,22 @@ export async function uploadMediaToImageKitAndFirebase(
       metadata: {
         originalFileName: file.name,
         mimeType: file.type,
-        imagekitTags: imagekitFile.AITags
+        imagekitTags: imagekitFile.AITags || []
       }
     };
+
+    // Only include userId if it's defined
+    if (userId) {
+      mediaRecord.userId = userId;
+    }
+
+    // Only include width/height if they're defined
+    if (imagekitFile.width) {
+      mediaRecord.width = imagekitFile.width;
+    }
+    if (imagekitFile.height) {
+      mediaRecord.height = imagekitFile.height;
+    }
 
     // Save to Firebase
     const docRef = await addDoc(collection(db, 'media'), mediaRecord);

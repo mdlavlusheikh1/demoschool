@@ -23,15 +23,13 @@ export const studentQueries = {
     let q;
     if (onlyActive) {
       q = query(
-        collection(db, 'users'),
-        where('role', '==', 'student'),
+        collection(db, 'students'),
         where('isActive', '==', true),
         orderBy('createdAt', 'desc')
       );
     } else {
       q = query(
-        collection(db, 'users'),
-        where('role', '==', 'student'),
+        collection(db, 'students'),
         orderBy('createdAt', 'desc')
       );
     }
@@ -42,8 +40,7 @@ export const studentQueries = {
   // Get students by school
   async getStudentsBySchool(schoolId: string): Promise<User[]> {
     const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'student'),
+      collection(db, 'students'),
       where('schoolId', '==', schoolId),
       orderBy('createdAt', 'desc')
     );
@@ -54,8 +51,7 @@ export const studentQueries = {
   // Get students by class
   async getStudentsByClass(className: string): Promise<User[]> {
     const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'student'),
+      collection(db, 'students'),
       where('class', '==', className),
       orderBy('createdAt', 'desc')
     );
@@ -66,8 +62,7 @@ export const studentQueries = {
   // Get active students
   async getActiveStudents(): Promise<User[]> {
     const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'student'),
+      collection(db, 'students'),
       where('isActive', '==', true),
       orderBy('createdAt', 'desc')
     );
@@ -78,8 +73,7 @@ export const studentQueries = {
   // Get inactive students
   async getInactiveStudents(): Promise<User[]> {
     const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'student'),
+      collection(db, 'students'),
       where('isActive', '==', false),
       orderBy('createdAt', 'desc')
     );
@@ -90,8 +84,7 @@ export const studentQueries = {
   // Get pending students (not yet approved)
   async getPendingStudents(): Promise<User[]> {
     const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'student'),
+      collection(db, 'students'),
       where('isApproved', '==', false),
       orderBy('createdAt', 'desc')
     );
@@ -101,7 +94,7 @@ export const studentQueries = {
 
   // Get student by ID
   async getStudentById(uid: string): Promise<User | null> {
-    const docRef = doc(db, 'users', uid);
+    const docRef = doc(db, 'students', uid);
     const docSnap = await getDoc(docRef);
     return docSnap.exists() ? { uid: docSnap.id, ...docSnap.data() } as User : null;
   },
@@ -109,8 +102,7 @@ export const studentQueries = {
   // Get student by student ID
   async getStudentByStudentId(studentId: string): Promise<User | null> {
     const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'student'),
+      collection(db, 'students'),
       where('studentId', '==', studentId),
       limit(1)
     );
@@ -128,10 +120,10 @@ export const studentQueries = {
     };
 
     if (studentData.uid) {
-      await setDoc(doc(db, 'users', studentData.uid), studentDoc);
+      await setDoc(doc(db, 'students', studentData.uid), studentDoc);
       return studentData.uid;
     } else {
-      const docRef = await addDoc(collection(db, 'users'), studentDoc);
+      const docRef = await addDoc(collection(db, 'students'), studentDoc);
       return docRef.id;
     }
   },
@@ -139,7 +131,7 @@ export const studentQueries = {
   // Update student
   async updateStudent(uid: string, updates: Partial<User>): Promise<void> {
     try {
-      const docRef = doc(db, 'users', uid);
+      const docRef = doc(db, 'students', uid);
       const updateData = {
         ...updates,
         updatedAt: serverTimestamp()
@@ -156,7 +148,7 @@ export const studentQueries = {
 
   // Activate/Deactivate student
   async setStudentActive(uid: string, isActive: boolean): Promise<void> {
-    const docRef = doc(db, 'users', uid);
+    const docRef = doc(db, 'students', uid);
     await updateDoc(docRef, {
       isActive,
       updatedAt: serverTimestamp()
@@ -167,7 +159,7 @@ export const studentQueries = {
   async deleteStudent(uid: string): Promise<void> {
     try {
       console.log('Attempting to delete student:', uid);
-      await deleteDoc(doc(db, 'users', uid));
+      await deleteDoc(doc(db, 'students', uid));
       console.log('Student deleted successfully:', uid);
     } catch (error) {
       console.error('Error deleting student:', error);
@@ -178,7 +170,7 @@ export const studentQueries = {
   // Approve student (set as approved and active)
   async approveStudent(uid: string): Promise<void> {
     try {
-      const docRef = doc(db, 'users', uid);
+      const docRef = doc(db, 'students', uid);
       await updateDoc(docRef, {
         isApproved: true,
         isActive: true,
@@ -191,19 +183,29 @@ export const studentQueries = {
     }
   },
 
-  // Reject student (set as rejected and inactive)
+  // Reject student (completely delete from database)
   async rejectStudent(uid: string): Promise<void> {
     try {
-      const docRef = doc(db, 'users', uid);
-      await updateDoc(docRef, {
-        isApproved: false,
-        isActive: false,
-        updatedAt: serverTimestamp()
-      });
-      console.log('Student rejected successfully:', uid);
+      const docRef = doc(db, 'students', uid);
+
+      // First, get the student data to log what we're deleting
+      const studentDoc = await getDoc(docRef);
+      if (studentDoc.exists()) {
+        const studentData = studentDoc.data();
+        console.log('🗑️ Deleting student:', {
+          uid,
+          name: studentData.name,
+          studentId: studentData.studentId,
+          email: studentData.email
+        });
+      }
+
+      // Delete the document completely
+      await deleteDoc(docRef);
+      console.log('✅ Student deleted successfully:', uid);
     } catch (error) {
-      console.error('Error rejecting student:', error);
-      throw new Error(`Failed to reject student: ${error}`);
+      console.error('❌ Error deleting student:', error);
+      throw new Error(`Failed to delete student: ${error}`);
     }
   },
 
@@ -215,7 +217,7 @@ export const studentQueries = {
     studentsByClass: Record<string, number>;
     studentsByGender: Record<string, number>;
   }> {
-    let q = query(collection(db, 'users'), where('role', '==', 'student'));
+    let q = query(collection(db, 'students'));
 
     if (schoolId) {
       q = query(q, where('schoolId', '==', schoolId));
@@ -253,7 +255,7 @@ export const studentQueries = {
 
     for (const studentData of studentsData) {
       // Auto-generate email if not provided
-      const email = studentData.email || (await import('../database-queries')).emailUtils.generateRandomEmail(studentData.name || 'student', 'iqra');
+      const email = studentData.email || this.generateRandomEmail(studentData.name || 'student', 'iqra');
 
       const studentDoc = {
         ...studentData,
@@ -263,7 +265,7 @@ export const studentQueries = {
         updatedAt: serverTimestamp()
       };
 
-      const docRef = await addDoc(collection(db, 'users'), studentDoc);
+      const docRef = await addDoc(collection(db, 'students'), studentDoc);
       importedIds.push(docRef.id);
     }
 
@@ -272,8 +274,17 @@ export const studentQueries = {
 
   // Create student with auto-generated email
   async createStudentWithAutoEmail(studentData: Omit<User, 'createdAt' | 'updatedAt' | 'email'> & { email?: string }): Promise<string> {
+    // Check if student ID already exists
+    if (studentData.studentId) {
+      const existingStudent = await this.getStudentByStudentId(studentData.studentId);
+      if (existingStudent) {
+        console.log(`⚠️ Student ID ${studentData.studentId} already exists, but continuing with save...`);
+        // Don't throw error, let the calling function handle it
+      }
+    }
+
     // Auto-generate email if not provided
-    const email = studentData.email || (await import('../database-queries')).emailUtils.generateStudentEmail(
+    const email = studentData.email || this.generateStudentEmail(
       studentData.name || 'student',
       studentData.studentId || '001',
       'iqra'
@@ -287,12 +298,26 @@ export const studentQueries = {
       updatedAt: serverTimestamp()
     };
 
+    console.log('🔍 Student document to save:', studentDoc);
+
     if (studentData.uid) {
-      await setDoc(doc(db, 'users', studentData.uid), studentDoc);
+      await setDoc(doc(db, 'students', studentData.uid), studentDoc);
       return studentData.uid;
     } else {
-      const docRef = await addDoc(collection(db, 'users'), studentDoc);
+      const docRef = await addDoc(collection(db, 'students'), studentDoc);
       return docRef.id;
     }
+  },
+
+  // Email generation utilities
+  generateRandomEmail(name: string, schoolName: string = 'iqra'): string {
+    const cleanName = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const randomNumber = Math.floor(Math.random() * 1000);
+    return `${cleanName}${randomNumber}@${schoolName}.com`;
+  },
+
+  generateStudentEmail(name: string, studentId: string, schoolName: string = 'iqra'): string {
+    const cleanName = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return `${cleanName}.${studentId}@${schoolName}.edu.bd`;
   }
 };

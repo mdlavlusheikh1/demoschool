@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
 import { useAuth } from '@/contexts/AuthContext';
@@ -16,7 +16,25 @@ import {
   Database,
   LogOut,
   Menu,
-  X
+  X,
+  GraduationCap,
+  Building,
+  BookOpen,
+  ClipboardList,
+  Calendar,
+  CreditCard,
+  Gift,
+  Award,
+  BookOpen as BookOpenIcon,
+  FileText,
+  Users as UsersIcon,
+  MessageSquare,
+  Bell,
+  Sparkles,
+  AlertCircle,
+  Package,
+  Globe,
+  Clock
 } from 'lucide-react';
 
 function SuperAdminDashboard() {
@@ -24,9 +42,18 @@ function SuperAdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const router = useRouter();
-  const { userData } = useAuth();
+  const pathname = usePathname();
+  const authContext = useAuth();
+  const userData = authContext?.userData || null;
+  const authLoading = authContext?.loading || false;
 
   useEffect(() => {
+    // Redirect from /super-admin/dashboard to /admin/dashboard
+    if (pathname === '/super-admin/dashboard') {
+      router.replace('/admin/dashboard');
+      return;
+    }
+
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUser(user);
@@ -37,7 +64,7 @@ function SuperAdminDashboard() {
     });
 
     return () => unsubscribe();
-  }, [router]);
+  }, [router, pathname]);
 
   const handleLogout = async () => {
     try {
@@ -48,7 +75,7 @@ function SuperAdminDashboard() {
     }
   };
 
-  if (loading) {
+  if (loading || authLoading) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
@@ -56,19 +83,39 @@ function SuperAdminDashboard() {
     );
   }
 
-  const menuItems = [
-    { icon: Home, label: 'ড্যাশবোর্ড', href: '/super-admin/dashboard', active: true },
-    { icon: Database, label: 'ডেটা ম্যানেজার', href: '/super-admin/data-manager' },
-    { icon: Building2, label: 'স্কুল ব্যবস্থাপনা', href: '/super-admin/schools' },
-    { icon: Users, label: 'সুপার এডমিন', href: '/super-admin/admins' },
-    { icon: BarChart3, label: 'রিপোর্ট ও এনালিটিক্স', href: '/super-admin/analytics' },
-    { icon: Database, label: 'ডেটাবেস ব্যাকআপ', href: '/super-admin/backup' },
-    { icon: Shield, label: 'নিরাপত্তা', href: '/super-admin/security' },
-    { icon: Settings, label: 'সিস্টেম সেটিংস', href: '/super-admin/settings' },
+  const menuItems: Array<{
+    icon: any;
+    label: string;
+    href?: string;
+    active?: boolean;
+    isLogout?: boolean;
+  }> = [
+    { icon: Home, label: 'ড্যাশবোর্ড', href: '/admin/dashboard', active: pathname === '/admin/dashboard' },
+    { icon: Users, label: 'শিক্ষার্থী', href: '/admin/students', active: pathname?.startsWith('/admin/students') },
+    { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: pathname?.startsWith('/admin/teachers') },
+    { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: pathname?.startsWith('/admin/parents') },
+    { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: pathname?.startsWith('/admin/classes') },
+    { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: pathname?.startsWith('/admin/attendance') },
+    { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: pathname?.startsWith('/admin/events') },
+    { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: pathname?.startsWith('/admin/accounting') },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: pathname?.startsWith('/admin/donation') },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: pathname?.startsWith('/admin/exams') },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: pathname?.startsWith('/admin/subjects') },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: pathname?.startsWith('/admin/homework') },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: pathname?.startsWith('/admin/support') },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: pathname?.startsWith('/admin/message') },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: pathname?.startsWith('/admin/notice') },
+    { icon: Clock, label: 'Routine', href: '/admin/routine', active: pathname?.startsWith('/admin/routine') },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: pathname?.startsWith('/admin/generate') },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: pathname?.startsWith('/admin/complaint') },
+    { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: pathname?.startsWith('/admin/inventory') },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: pathname?.startsWith('/admin/public-pages-control') },
+    { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: pathname?.startsWith('/admin/settings') },
+    { icon: LogOut, label: 'লগআউট', isLogout: true },
   ];
 
   return (
-    <div className="min-h-screen bg-gray-100">
+    <div className="min-h-screen bg-gray-100 flex">
       {/* Mobile Sidebar Backdrop */}
       {sidebarOpen && (
         <div 
@@ -81,10 +128,12 @@ function SuperAdminDashboard() {
       <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-gradient-to-b from-purple-700 to-purple-900 shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 ${
         sidebarOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
-        <div className="flex items-center justify-between h-16 px-6 border-b border-purple-600">
+        <div className="flex items-center justify-between h-16 px-6 border-b border-purple-600 bg-purple-800">
           <div className="flex items-center space-x-2">
-            <div className="w-8 h-8 bg-gradient-to-br from-yellow-400 to-orange-500 rounded-full flex items-center justify-center">
-              <Shield className="w-5 h-5 text-white" />
+            <div className="relative">
+              <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center transform rotate-45">
+                <div className="w-6 h-6 bg-orange-500 rounded-full transform -rotate-45"></div>
+              </div>
             </div>
             <span className="text-lg font-bold text-white">সুপার এডমিন</span>
           </div>
@@ -97,37 +146,41 @@ function SuperAdminDashboard() {
         </div>
 
         <nav className="mt-6">
-          {menuItems.map((item) => (
-            <a
-              key={item.label}
-              href={item.href}
-              className={`flex items-center px-6 py-3 text-sm font-medium transition-colors ${
-                item.active
-                  ? 'bg-purple-600 text-white border-r-2 border-yellow-400'
-                  : 'text-purple-200 hover:bg-purple-600 hover:text-white'
-              }`}
-            >
-              <item.icon className="w-5 h-5 mr-3" />
-              {item.label}
-            </a>
-          ))}
+          {menuItems.map((item) => {
+            if (item.isLogout) {
+              return (
+                <button
+                  key={item.label}
+                  onClick={handleLogout}
+                  className="flex items-center w-full px-6 py-3 text-sm font-medium text-red-300 hover:bg-red-600 hover:text-white transition-colors"
+                >
+                  <item.icon className="w-5 h-5 mr-3" />
+                  {item.label}
+                </button>
+              );
+            }
+            return (
+              <a
+                key={item.label}
+                href={item.href}
+                className={`flex items-center px-6 py-3 text-sm font-medium transition-colors ${
+                  item.active
+                    ? 'bg-purple-600 text-white border-r-2 border-yellow-400'
+                    : 'text-purple-200 hover:bg-purple-600 hover:text-white'
+                }`}
+              >
+                <item.icon className="w-5 h-5 mr-3" />
+                {item.label}
+              </a>
+            );
+          })}
         </nav>
-
-        <div className="absolute bottom-0 w-full p-6 border-t border-purple-600">
-          <button
-            onClick={handleLogout}
-            className="flex items-center w-full px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-600 hover:text-white rounded-lg transition-colors"
-          >
-            <LogOut className="w-5 h-5 mr-3" />
-            লগআউট
-          </button>
-        </div>
       </div>
 
       {/* Main Content */}
-      <div className="lg:pl-64">
+      <div className="flex-1 lg:pl-0">
         {/* Top Navigation */}
-        <div className="bg-white shadow-sm border-b border-gray-200">
+        <div className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-30">
           <div className="px-4 sm:px-6 lg:px-8">
             <div className="flex items-center justify-between h-16">
               <div className="flex items-center">
@@ -285,10 +338,20 @@ function SuperAdminDashboard() {
 }
 
 export default function SuperAdminDashboardWrapper() {
-  const { userData } = useAuth();
+  const authContext = useAuth();
+  const userData = authContext?.userData || null;
+  const authLoading = authContext?.loading || false;
   
-  // Check if user has super admin role
-  if (userData && userData.role !== 'super_admin') {
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+  
+  // Check if user has admin or super_admin role
+  if (userData && userData.role !== 'admin' && userData.role !== 'super_admin') {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="text-center">

@@ -2,9 +2,11 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import { useAuth } from '@/contexts/AuthContext';
 import { classQueries, feeQueries } from '@/lib/database-queries';
 import {
   Home,
@@ -34,7 +36,8 @@ import {
   Loader2,
   X as XIcon,
   Package,
-  Edit
+  Edit,
+  Globe
 } from 'lucide-react';
 
 interface Class {
@@ -245,6 +248,7 @@ function EditFeePage() {
 
   const menuItems = [
     { icon: Home, label: 'ড্যাশবোর্ড', href: '/admin/dashboard', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Users, label: 'শিক্ষার্থী', href: '/admin/students', active: false },
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
@@ -256,10 +260,10 @@ function EditFeePage() {
     { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
     { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
     { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
+    { icon: Calendar, label: 'বার্তা', href: '/admin/message', active: false },
     { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Users, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -569,8 +573,49 @@ function EditFeePage() {
   );
 }
 
+
 export default function EditFeePageWrapper() {
+  const { userData, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    // Block unauthorized access - only admin and super_admin can access
+    if (!loading && userData?.role) {
+      const role = userData.role;
+      
+      if (role === 'teacher') {
+        router.push('/teacher/accounting/fees/[id]/edit');
+        return;
+      }
+      
+      if (role === 'parent') {
+        router.push('/parent/dashboard');
+        return;
+      }
+      
+      if (role === 'student') {
+        router.push('/student/dashboard');
+        return;
+      }
+      
+      // Only allow admin and super_admin
+      if (role !== 'admin' && role !== 'super_admin') {
+        router.push('/');
+        return;
+      }
+    }
+  }, [userData, loading, router]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
   return (
+
     <ProtectedRoute requireAuth={true}>
       <EditFeePage />
     </ProtectedRoute>

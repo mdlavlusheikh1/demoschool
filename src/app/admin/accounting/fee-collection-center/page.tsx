@@ -6,7 +6,8 @@ import { auth, db } from '@/lib/firebase';
 import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
 import { collection, onSnapshot, query, where, orderBy } from 'firebase/firestore';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { studentQueries, accountingQueries } from '@/lib/database-queries';
+import { useAuth } from '@/contexts/AuthContext';
+import { studentQueries, accountingQueries, settingsQueries } from '@/lib/database-queries';
 import { SCHOOL_ID } from '@/lib/constants';
 import {
   Home,
@@ -59,7 +60,11 @@ import {
   Coins,
   PiggyBank,
   CreditCard as CreditCardIcon,
-  BookOpen as BookOpenIcon
+  BookOpen as BookOpenIcon,
+  Globe,
+  MessageSquare,
+  Sparkles,
+  Gift
 } from 'lucide-react';
 
 interface FeeCollectionSummary {
@@ -90,11 +95,21 @@ interface ClassWiseSummary {
   classSpecificFee?: number;
 }
 
+// Helper function to convert numbers to Bengali numerals
+const toBengaliNumerals = (num: number | undefined | null): string => {
+  if (num === undefined || num === null || isNaN(num)) return '০';
+  const bengaliDigits = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+  const formatted = num.toLocaleString('en-US');
+  return formatted.replace(/\d/g, (digit) => bengaliDigits[parseInt(digit)]);
+};
+
 function FeeCollectionCenter() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
+  const [imageError, setImageError] = useState(false);
+  const { userData } = useAuth();
 
   // Summary states
   const [tuitionSummary, setTuitionSummary] = useState<FeeCollectionSummary>({
@@ -139,7 +154,20 @@ function FeeCollectionCenter() {
   const [examStatusFilter, setExamStatusFilter] = useState('all');
   const [examStudents, setExamStudents] = useState<any[]>([]);
 
+  // SMS template states
+  const [smsTemplates, setSmsTemplates] = useState<any[]>([]);
+  const [templateCategory, setTemplateCategory] = useState<string>('');
+  const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [templatePreviewData, setTemplatePreviewData] = useState<any>(null);
+
+
   const router = useRouter();
+
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -636,6 +664,142 @@ function FeeCollectionCenter() {
     // This would listen to tuition, exam, and admission fee collections
   };
 
+  // Load SMS templates from settings
+  const loadSMSTemplates = async () => {
+    try {
+      const settings = await settingsQueries.getSettings();
+      if (settings && (settings as any).smsTemplates && Array.isArray((settings as any).smsTemplates)) {
+        setSmsTemplates((settings as any).smsTemplates);
+      }
+    } catch (error) {
+      console.error('Error loading SMS templates:', error);
+    }
+  };
+
+  // Get template by category
+  const getTemplateByCategory = (category: string) => {
+    return smsTemplates.find(t => t.category === category) || null;
+  };
+
+  // Show template preview with real data
+  const handleShowTemplate = async (category: string, feeType: string) => {
+    setTemplateCategory(category);
+    const template = getTemplateByCategory(category);
+    
+    if (!template) {
+      alert(`${category} এর জন্য কোনো টেম্পলেট পাওয়া যায়নি। সেটিংস পেজে টেম্পলেট যোগ করুন।`);
+      return;
+    }
+
+    setSelectedTemplate(template);
+
+    // Fetch real student data for preview
+    try {
+      const studentsData = await studentQueries.getAllStudents();
+      const allTransactions = await accountingQueries.getAllTransactions(SCHOOL_ID);
+      
+      // Get a student with transactions for this fee type
+      let previewStudent = null;
+      let previewAmount = 0;
+      let previewReceiptNumber = '';
+
+      // Find a student who has paid this type of fee
+      const feeTransactions = allTransactions.filter((t: any) => {
+        if (feeType === 'session_fee') {
+          return (t.category === 'session_fee' || t.category === 'admission_fee') && t.status === 'completed';
+        }
+        return t.category === feeType && t.status === 'completed';
+      });
+
+      if (feeTransactions.length > 0) {
+        const latestTransaction = feeTransactions[feeTransactions.length - 1];
+        previewStudent = studentsData.find((s: any) => s.uid === latestTransaction.studentId);
+        previewAmount = latestTransaction.paidAmount || latestTransaction.amount || 0;
+        previewReceiptNumber = (latestTransaction as any).receiptNumber || latestTransaction.id || 'RCP-2024-001';
+      } else {
+        // Use first student as fallback
+        previewStudent = studentsData[0];
+        previewAmount = category === 'Tuition Fee' ? 3000 : category === 'Exam Fee' ? 300 : 2000;
+      }
+
+      // Get settings for school name
+      const settings = await settingsQueries.getSettings();
+      const schoolName = (settings as any)?.schoolName || 'ইকরা স্কুল';
+
+      // Prepare preview data
+      const previewData = {
+        student: previewStudent || {
+          displayName: 'মোহাম্মদ রহিম',
+          name: 'মোহাম্মদ রহিম',
+          class: '১০ম শ্রেণি',
+          rollNumber: '০১',
+          guardianName: 'মোহাম্মদ আলী',
+          guardianPhone: '০১৭১২৩৪৫৬৭৮'
+        },
+        amount: previewAmount,
+        receiptNumber: previewReceiptNumber,
+        schoolName: schoolName,
+        date: new Date().toLocaleDateString('bn-BD'),
+        feeType: category === 'Tuition Fee' ? 'টিউশন' : category === 'Exam Fee' ? 'পরীক্ষার' : category === 'Session' ? 'সেশন' : 'ভর্তি',
+        month: new Date().toLocaleDateString('bn-BD', { month: 'long' }),
+        months: new Date().toLocaleDateString('bn-BD', { month: 'long' }),
+        session: '২০২৪-২০২৫',
+        examDate: '১৫ জানুয়ারি, ২০২৫',
+        examName: 'অর্ধবার্ষিক পরীক্ষা',
+        resultDate: '৩০ জানুয়ারি, ২০২৫'
+      };
+
+      setTemplatePreviewData(previewData);
+      setShowTemplateModal(true);
+    } catch (error) {
+      console.error('Error preparing template preview:', error);
+      // Use default data
+      setTemplatePreviewData({
+        student: {
+          displayName: 'মোহাম্মদ রহিম',
+          name: 'মোহাম্মদ রহিম',
+          class: '১০ম শ্রেণি',
+          rollNumber: '০১',
+          guardianName: 'মোহাম্মদ আলী',
+          guardianPhone: '০১৭১২৩৪৫৬৭৮'
+        },
+        amount: 3000,
+        receiptNumber: 'RCP-2024-001',
+        schoolName: 'ইকরা স্কুল',
+        date: new Date().toLocaleDateString('bn-BD'),
+        feeType: 'টিউশন',
+        month: new Date().toLocaleDateString('bn-BD', { month: 'long' }),
+        months: new Date().toLocaleDateString('bn-BD', { month: 'long' }),
+        session: '২০২৪-২০২৫',
+        examDate: '১৫ জানুয়ারি, ২০২৫',
+        examName: 'অর্ধবার্ষিক পরীক্ষা',
+        resultDate: '৩০ জানুয়ারি, ২০২৫'
+      });
+      setShowTemplateModal(true);
+    }
+  };
+
+  // Format template message with real data
+  const formatTemplateMessage = (message: string, data: any) => {
+    return message
+      .replace(/{studentName}/g, data.student?.displayName || data.student?.name || 'মোহাম্মদ রহিম')
+      .replace(/{className}/g, data.student?.class || '১০ম শ্রেণি')
+      .replace(/{rollNumber}/g, data.student?.rollNumber?.toString() || '০১')
+      .replace(/{guardianName}/g, data.student?.guardianName || 'মোহাম্মদ আলী')
+      .replace(/{guardianPhone}/g, data.student?.guardianPhone || '০১৭১২৩৪৫৬৭৮')
+      .replace(/{amount}/g, data.amount?.toLocaleString() || '৩০০০')
+      .replace(/{date}/g, data.date || new Date().toLocaleDateString('bn-BD'))
+      .replace(/{schoolName}/g, data.schoolName || 'ইকরা স্কুল')
+      .replace(/{feeType}/g, data.feeType || 'টিউশন')
+      .replace(/{receiptNumber}/g, data.receiptNumber || 'RCP-2024-001')
+      .replace(/{month}/g, data.month || 'জানুয়ারি')
+      .replace(/{months}/g, data.months || 'জানুয়ারি')
+      .replace(/{session}/g, data.session || '২০২৪-২০২৫')
+      .replace(/{examDate}/g, data.examDate || '১৫ জানুয়ারি, ২০২৫')
+      .replace(/{examName}/g, data.examName || 'অর্ধবার্ষিক পরীক্ষা')
+      .replace(/{resultDate}/g, data.resultDate || '৩০ জানুয়ারি, ২০২৫');
+  };
+
   // Computed filtered exam students
   const filteredExamStudents = useMemo(() => {
     let filtered = examStudents;
@@ -665,6 +829,20 @@ function FeeCollectionCenter() {
       const studentsData = await studentQueries.getAllStudents();
       const allTransactions = await accountingQueries.getAllTransactions(schoolId);
 
+      // Get exam fee structure to determine expected fee amounts
+      let examFeeStructure: any = {};
+      try {
+        const examFees = await accountingQueries.getExamFees(schoolId);
+        // Use the first available exam fee type as default (usually Monthly)
+        if (examFees['Monthly Examination Fee'] && Object.keys(examFees['Monthly Examination Fee']).length > 0) {
+          examFeeStructure = examFees['Monthly Examination Fee'];
+        } else if (examFees['First Term Examination Fee'] && Object.keys(examFees['First Term Examination Fee']).length > 0) {
+          examFeeStructure = examFees['First Term Examination Fee'];
+        }
+      } catch (error) {
+        console.error('Error loading exam fee structure:', error);
+      }
+
       // Process each student to determine their exam fee status
       const processedStudents = studentsData.map((student: any) => {
         // Get exam fee transactions for this student
@@ -674,13 +852,26 @@ function FeeCollectionCenter() {
           transaction.status === 'completed'
         );
 
+        // Calculate total collected amount from transactions
+        const totalCollected = studentExamTransactions.reduce((sum: number, t: any) => 
+          sum + (t.paidAmount || t.amount || 0), 0
+        );
+
+        // Get expected exam fee amount from structure or use default
+        const studentClass = student.class || 'প্রথম';
+        const expectedFeeAmount = examFeeStructure[studentClass] || 300; // Default 300 if not found
+
         // Determine exam fee status
         let examFeeStatus = 'pending';
         let lastPaymentDate = null;
         let overdueDays = 0;
+        let examFeeAmount = expectedFeeAmount; // Default to expected amount
 
         if (studentExamTransactions.length > 0) {
           examFeeStatus = 'paid';
+          // Keep expected amount for display, collected amount is separate
+          examFeeAmount = expectedFeeAmount;
+          
           // Get the most recent payment
           const sortedTransactions = studentExamTransactions.sort((a: any, b: any) =>
             new Date(b.date).getTime() - new Date(a.date).getTime()
@@ -699,13 +890,17 @@ function FeeCollectionCenter() {
         } else {
           // Check if student has any pending exam fees (no transactions means pending)
           examFeeStatus = 'pending';
+          examFeeAmount = expectedFeeAmount; // Show expected amount for pending students
         }
 
         return {
           ...student,
           examFeeStatus,
           lastPaymentDate,
-          overdueDays
+          overdueDays,
+          examFeeAmount,
+          expectedFeeAmount,
+          totalCollected
         };
       });
 
@@ -734,17 +929,20 @@ function FeeCollectionCenter() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: true },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -824,10 +1022,21 @@ function FeeCollectionCenter() {
 
               <div className="flex items-center space-x-4 h-full">
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">
-                    {user?.email?.charAt(0).toUpperCase()}
-                  </span>
+                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                  {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                    <img
+                      src={(userData as any)?.photoURL || user?.photoURL || ''}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => {
+                        setImageError(true);
+                      }}
+                    />
+                  ) : (
+                    <span className="text-white font-medium text-sm">
+                      {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -863,7 +1072,7 @@ function FeeCollectionCenter() {
                 <h3 className="text-lg font-semibold text-gray-900 mb-2">টিউশন ফি আদায়</h3>
                 <p className="text-gray-600 text-sm mb-3">মাসিক টিউশন ফি সংগ্রহ করুন</p>
                 <div className="flex items-center justify-between mb-4">
-                  <div className="text-2xl font-bold text-green-600">৳{tuitionSummary.totalCollected.toLocaleString()}</div>
+                  <div className="text-2xl font-bold text-green-600">৳{toBengaliNumerals(tuitionSummary.totalCollected)}</div>
                   <div className={`text-sm px-2 py-1 rounded-full ${
                     tuitionSummary.collectionRate >= 70 ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
                   }`}>
@@ -889,7 +1098,7 @@ function FeeCollectionCenter() {
                 <h3 className="text-lg font-semibold text-gray-900 mb-2">পরীক্ষার ফি আদায়</h3>
                 <p className="text-gray-600 text-sm mb-3">পরীক্ষার ফি সংগ্রহ করুন</p>
                 <div className="flex items-center justify-between mb-4">
-                  <div className="text-2xl font-bold text-green-600">৳{examSummary.totalCollected.toLocaleString()}</div>
+                  <div className="text-2xl font-bold text-green-600">৳{toBengaliNumerals(examSummary.totalCollected)}</div>
                   <div className={`text-sm px-2 py-1 rounded-full ${
                     examSummary.collectionRate >= 70 ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
                   }`}>
@@ -915,7 +1124,7 @@ function FeeCollectionCenter() {
                 <h3 className="text-lg font-semibold text-gray-900 mb-2">ভর্তি ও সেশন ফি আদায়</h3>
                 <p className="text-gray-600 text-sm mb-3">ভর্তি এবং সেশন ফি সংগ্রহ করুন</p>
                 <div className="flex items-center justify-between mb-4">
-                  <div className="text-2xl font-bold text-green-600">৳{admissionSummary.totalCollected.toLocaleString()}</div>
+                  <div className="text-2xl font-bold text-green-600">৳{toBengaliNumerals(admissionSummary.totalCollected)}</div>
                   <div className={`text-sm px-2 py-1 rounded-full ${
                     admissionSummary.collectionRate >= 70 ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
                   }`}>
@@ -1016,8 +1225,22 @@ function FeeCollectionCenter() {
                         <div className="space-y-3 mb-4">
                           <div className="flex justify-between items-center">
                             <span className="text-sm text-gray-600">পরীক্ষার ফি:</span>
-                            <span className="text-sm font-medium">৳300</span>
+                            <span className="text-sm font-medium">৳{toBengaliNumerals(student.examFeeAmount || student.expectedFeeAmount || 300)}</span>
                           </div>
+                          {student.examFeeStatus === 'paid' && student.totalCollected > 0 && (
+                            <>
+                              <div className="flex justify-between items-center">
+                                <span className="text-sm text-gray-600">আদায়কৃত:</span>
+                                <span className="text-sm font-medium text-green-600">৳{toBengaliNumerals(student.totalCollected)}</span>
+                              </div>
+                              {student.examFeeAmount && student.totalCollected < student.examFeeAmount && (
+                                <div className="flex justify-between items-center">
+                                  <span className="text-sm text-gray-600">বাকি:</span>
+                                  <span className="text-sm font-medium text-orange-600">৳{toBengaliNumerals(student.examFeeAmount - student.totalCollected)}</span>
+                                </div>
+                              )}
+                            </>
+                          )}
                           <div className="flex justify-between items-center">
                             <span className="text-sm text-gray-600">স্ট্যাটাস:</span>
                             <span className={`text-sm px-2 py-1 rounded-full ${
@@ -1118,10 +1341,10 @@ function FeeCollectionCenter() {
                           <span className="text-sm text-gray-900">{classData.totalStudents}</span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-center">
-                          <span className="text-sm font-medium text-green-600">৳{classData.collectedAmount.toLocaleString()}</span>
+                          <span className="text-sm font-medium text-green-600">৳{toBengaliNumerals(classData.collectedAmount)}</span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-center">
-                          <span className="text-sm font-medium text-orange-600">৳{classData.pendingAmount.toLocaleString()}</span>
+                          <span className="text-sm font-medium text-orange-600">৳{toBengaliNumerals(classData.pendingAmount)}</span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-center">
                           <div className="flex items-center justify-center">
@@ -1155,8 +1378,49 @@ function FeeCollectionCenter() {
   );
 }
 
+
 export default function FeeCollectionCenterWrapper() {
+  const { userData, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    // Block unauthorized access - only admin and super_admin can access
+    if (!loading && userData?.role) {
+      const role = userData.role;
+      
+      if (role === 'teacher') {
+        router.push('/teacher/accounting/fee-collection-center');
+        return;
+      }
+      
+      if (role === 'parent') {
+        router.push('/parent/dashboard');
+        return;
+      }
+      
+      if (role === 'student') {
+        router.push('/student/dashboard');
+        return;
+      }
+      
+      // Only allow admin and super_admin
+      if (role !== 'admin' && role !== 'super_admin') {
+        router.push('/');
+        return;
+      }
+    }
+  }, [userData, loading, router]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
   return (
+
     <ProtectedRoute requireAuth={true}>
       <FeeCollectionCenter />
     </ProtectedRoute>

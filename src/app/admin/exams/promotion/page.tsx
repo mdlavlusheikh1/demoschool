@@ -15,7 +15,7 @@ import {
   Class,
   Exam
 } from '@/lib/database-queries';
-import { SCHOOL_ID } from '@/lib/constants';
+import { SCHOOL_ID, SCHOOL_NAME } from '@/lib/constants';
 import {
   ArrowLeft,
   RefreshCw,
@@ -151,6 +151,7 @@ function ExamPromotionPage() {
 
   const router = useRouter();
   const schoolId = SCHOOL_ID;
+  const schoolName = SCHOOL_NAME;
 
   // Convert English numbers to Bengali numerals
   const toBengaliNumerals = (num: number): string => {
@@ -227,8 +228,8 @@ function ExamPromotionPage() {
         classId: cls.classId || cls.id || '',
         className: cls.className || '',
         section: cls.section || 'A',
-        schoolId: cls.schoolId,
-        schoolName: cls.schoolName || 'Iqra Education System',
+        schoolId: cls.schoolId || schoolId,
+        schoolName: cls.schoolName || schoolName,
         teacherId: cls.teacherId,
         teacherName: cls.teacherName,
         academicYear: cls.academicYear,

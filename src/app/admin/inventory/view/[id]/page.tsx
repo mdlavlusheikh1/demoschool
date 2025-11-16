@@ -4,13 +4,15 @@ import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { User, onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { inventoryQueries, InventoryItem, StockMovement } from '@/lib/database-queries';
 import {
   Home, Users, BookOpen, ClipboardList, Calendar, Settings, LogOut, Menu, X,
   UserCheck, GraduationCap, Building, CreditCard, TrendingUp, Search, Bell,
   Package, AlertTriangle, CheckCircle, Edit, Trash2, Eye, RefreshCw, ArrowLeft,
-  TrendingDown, TrendingUp as TrendingUpIcon, Activity, DollarSign, Calendar as CalendarIcon
+  TrendingDown, TrendingUp as TrendingUpIcon, Activity, DollarSign,   Calendar as CalendarIcon,
+  Globe
 } from 'lucide-react';
 
 function InventoryViewPage() {
@@ -20,9 +22,16 @@ function InventoryViewPage() {
   const [item, setItem] = useState<InventoryItem | null>(null);
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([]);
   const [dataLoading, setDataLoading] = useState(true);
+  const [imageError, setImageError] = useState(false);
   const router = useRouter();
   const params = useParams();
   const itemId = params.id as string;
+  const { userData } = useAuth();
+
+  // Reset image error when userData or user changes
+  useEffect(() => {
+    setImageError(false);
+  }, [userData, user]);
 
   // Load inventory item data
   useEffect(() => {
@@ -174,6 +183,7 @@ function InventoryViewPage() {
 
   const menuItems = [
     { icon: Home, label: 'ড্যাশবোর্ড', href: '/admin/dashboard', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Users, label: 'শিক্ষার্থী', href: '/admin/students', active: false },
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
@@ -185,9 +195,9 @@ function InventoryViewPage() {
     { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
     { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
     { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
+    { icon: Calendar, label: 'বার্তা', href: '/admin/message', active: false },
     { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Users, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: true },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
@@ -249,8 +259,21 @@ function InventoryViewPage() {
               </div>
               <div className="flex items-center space-x-4 h-full">
                 <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">{user?.email?.charAt(0).toUpperCase()}</span>
+                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
+                  {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
+                    <img
+                      src={(userData as any)?.photoURL || user?.photoURL || ''}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => {
+                        setImageError(true);
+                      }}
+                    />
+                  ) : (
+                    <span className="text-white font-medium text-sm">
+                      {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

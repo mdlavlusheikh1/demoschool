@@ -1,4 +1,4 @@
-'use client';
+ 'use client';
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
@@ -6,8 +6,11 @@ import { auth } from '@/lib/firebase';
 import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
-import { studentQueries, accountingQueries, feeQueries } from '@/lib/database-queries';
+import { studentQueries, accountingQueries, feeQueries, settingsQueries } from '@/lib/database-queries';
 import { SCHOOL_ID } from '@/lib/constants';
+import { exportTuitionFeeCollectionToPDF, exportTuitionFeeCollectionToDOCX } from '@/lib/export-utils';
+import { db } from '@/lib/firebase';
+import { doc, getDoc } from 'firebase/firestore';
 import {
   Home,
   Users,
@@ -47,8 +50,25 @@ import {
   Eye,
   Edit,
   Trash2,
-  RefreshCw
+  RefreshCw,
+  Globe,
+  MessageSquare,
+  FileText,
+  Award,
+  AlertCircle,
+  Sparkles,
+  Gift,
+  BookOpen as BookOpenIcon,
+  Users as UsersIcon2
 } from 'lucide-react';
+
+// Helper function to convert numbers to Bengali numerals
+const toBengaliNumerals = (num: number | undefined | null): string => {
+  if (num === undefined || num === null || isNaN(num)) return '০';
+  const bengaliDigits = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+  const formatted = num.toLocaleString('en-US');
+  return formatted.replace(/\d/g, (digit) => bengaliDigits[parseInt(digit)]);
+};
 
 function CollectSalaryPage() {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -79,7 +99,8 @@ function CollectSalaryPage() {
     donation: '0',
     paymentMethod: 'নগদ',
     date: new Date().toISOString().split('T')[0],
-    collectedBy: ''
+    collectedBy: '',
+    numberOfMonths: 1 // Default to 1 month
   });
 
   // Donation tracking state
@@ -91,6 +112,11 @@ function CollectSalaryPage() {
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(10);
+
+  // Export state
+  const [isExporting, setIsExporting] = useState(false);
+  const [schoolLogo, setSchoolLogo] = useState<string>('');
+  const [schoolSettings, setSchoolSettings] = useState<any>(null);
 
   const router = useRouter();
   const { userData } = useAuth();
@@ -104,6 +130,7 @@ function CollectSalaryPage() {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUser(user);
+        loadSchoolSettings();
       } else {
         router.push('/auth/login');
       }
@@ -112,6 +139,39 @@ function CollectSalaryPage() {
 
     return () => unsubscribe();
   }, [router]);
+
+  // Load school settings and logo
+  const loadSchoolSettings = async () => {
+    try {
+      // Load from system settings first (main source)
+      const settingsData = await settingsQueries.getSettings();
+      
+      if (settingsData) {
+        setSchoolSettings(settingsData);
+        // Try different logo fields
+        if ((settingsData as any).schoolLogo) {
+          setSchoolLogo((settingsData as any).schoolLogo);
+        } else if ((settingsData as any).websiteLogo) {
+          setSchoolLogo((settingsData as any).websiteLogo);
+        }
+      } else {
+        // Fallback to schools collection
+        const schoolId = SCHOOL_ID;
+        const settingsRef = doc(db, 'schools', schoolId);
+        const settingsSnap = await getDoc(settingsRef);
+        
+        if (settingsSnap.exists()) {
+          const data = settingsSnap.data();
+          setSchoolSettings(data);
+          if (data.logo) {
+            setSchoolLogo(data.logo);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error loading school settings:', error);
+    }
+  };
 
   // Fetch students from Firebase
   useEffect(() => {
@@ -148,6 +208,7 @@ function CollectSalaryPage() {
           // Initialize payment status and amounts for each month
           const payments = months.map(() => false);
           const paymentAmounts = months.map(() => ({ paid: 0, donation: 0 }));
+          const collectionInfo = months.map(() => ({ collectedBy: '', collectionDate: '' }));
 
           // Update with actual payment data
           studentTransactions.forEach(transaction => {
@@ -158,6 +219,10 @@ function CollectSalaryPage() {
                 paymentAmounts[monthIndex] = {
                   paid: transaction.paidAmount || transaction.amount || 0,
                   donation: transaction.donation || 0
+                };
+                collectionInfo[monthIndex] = {
+                  collectedBy: transaction.collectedBy || transaction.recordedBy || '',
+                  collectionDate: transaction.collectionDate || transaction.date || ''
                 };
                 console.log(`✅ Updated ${transaction.month} - Paid: ${transaction.paidAmount}, Donation: ${transaction.donation}`);
               }
@@ -212,9 +277,11 @@ function CollectSalaryPage() {
             studentId: student.uid,
             studentName: student.name || student.displayName,
             className: student.class || 'N/A',
+            rollNumber: student.rollNumber || student.studentId || 'N/A',
             monthlyFee,
             payments,
             paymentAmounts,
+            collectionInfo,
             totalPaid,
             totalDonation,
             totalDue
@@ -300,6 +367,7 @@ function CollectSalaryPage() {
             // Update payment status and amounts for each month
             const updatedPayments = [...student.payments];
             const updatedPaymentAmounts = [...student.paymentAmounts];
+            const updatedCollectionInfo = [...(student.collectionInfo || months.map(() => ({ collectedBy: '', collectionDate: '' })))];
 
             studentTransactions.forEach(transaction => {
               if (transaction.month) {
@@ -311,6 +379,10 @@ function CollectSalaryPage() {
                   updatedPaymentAmounts[monthIndex] = {
                     paid: transaction.paidAmount || transaction.amount || 0,
                     donation: transaction.donation || 0
+                  };
+                  updatedCollectionInfo[monthIndex] = {
+                    collectedBy: transaction.collectedBy || transaction.recordedBy || '',
+                    collectionDate: transaction.collectionDate || transaction.date || ''
                   };
                   console.log('💰 Updated payment amounts for month:', monthIndex, updatedPaymentAmounts[monthIndex]);
                 }
@@ -330,13 +402,15 @@ function CollectSalaryPage() {
               totalDonation,
               totalDue,
               payments: updatedPayments,
-              paymentAmounts: updatedPaymentAmounts
+              paymentAmounts: updatedPaymentAmounts,
+              collectionInfo: updatedCollectionInfo
             });
 
             return {
               ...student,
               payments: updatedPayments,
               paymentAmounts: updatedPaymentAmounts,
+              collectionInfo: updatedCollectionInfo,
               totalPaid,
               totalDonation,
               totalDue
@@ -434,14 +508,19 @@ function CollectSalaryPage() {
   useEffect(() => {
     const monthlyFee = parseFloat(formData.monthlyFee) || 0;
     const paidAmount = parseFloat(formData.paidAmount) || 0;
+    const numberOfMonths = formData.numberOfMonths ?? 1; // Use nullish coalescing
+    
+    // Calculate total expected amount for multiple months
+    const totalExpectedAmount = monthlyFee * numberOfMonths;
 
-    if (paidAmount < monthlyFee) {
-      const donationAmount = monthlyFee - paidAmount;
+    if (paidAmount < totalExpectedAmount) {
+      const donationAmount = totalExpectedAmount - paidAmount;
       setFormData(prev => ({ ...prev, donation: donationAmount.toString() }));
     } else {
       setFormData(prev => ({ ...prev, donation: '0' }));
     }
-  }, [formData.paidAmount, formData.monthlyFee]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData.paidAmount, formData.monthlyFee, formData.numberOfMonths]);
 
   const openPaymentDialog = async (student: any, monthIndex: number) => {
     setSelectedStudent(student);
@@ -497,6 +576,20 @@ function CollectSalaryPage() {
     console.log('- Monthly Fee:', studentMonthlyFee);
     console.log('- Payment Month:', months[monthIndex]);
 
+    // Fetch latest user name from Firestore
+    let latestCollectorName = userData?.name || user?.displayName || user?.email?.split('@')[0] || 'Admin User';
+    if (user) {
+      try {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+          const userDocData = userDoc.data();
+          latestCollectorName = userDocData.name || user?.displayName || user?.email?.split('@')[0] || 'Admin User';
+        }
+      } catch (error) {
+        console.error('Error fetching latest user name:', error);
+      }
+    }
+
     setFormData({
       year: currentYear,
       month: months[monthIndex],
@@ -506,7 +599,8 @@ function CollectSalaryPage() {
       donation: '0',
       paymentMethod: 'নগদ',
       date: new Date().toISOString().split('T')[0],
-      collectedBy: userData?.name || user?.email?.split('@')[0] || ''
+      collectedBy: latestCollectorName,
+      numberOfMonths: 1 // Default to 1 month
     });
 
     setDialogOpen(true);
@@ -544,54 +638,109 @@ function CollectSalaryPage() {
 
   const handleSubmitPayment = async () => {
     try {
-      console.log('Saving payment for student:', selectedStudent.studentName, 'Month:', formData.month);
+      const numberOfMonths = formData.numberOfMonths || 1;
+      const monthlyFee = parseFloat(formData.monthlyFee) || 0;
+      const totalPaidAmount = parseFloat(formData.paidAmount) || 0;
+      const totalDonation = parseFloat(formData.donation) || 0;
+      
+      // Calculate per-month amounts
+      const paidPerMonth = totalPaidAmount / numberOfMonths;
+      const donationPerMonth = totalDonation / numberOfMonths;
+      
+      console.log(`Saving payment for ${numberOfMonths} month(s):`, selectedStudent.studentName);
+      console.log('Starting month:', formData.month, 'Index:', selectedMonth);
 
-      // Save payment data to Firebase
-      const paymentRecord = {
-        type: 'income' as const,
-        category: 'tuition_fee',
-        amount: parseFloat(formData.paidAmount) + parseFloat(formData.donation),
-        description: `${formData.month} মাসের টিউশন ফি - ${selectedStudent.studentName}`,
-        date: formData.date,
-        status: 'completed' as const,
-        schoolId: SCHOOL_ID,
-        recordedBy: user?.email || 'admin',
-        paymentMethod: formData.paymentMethod as 'cash' | 'bank_transfer' | 'check' | 'online' | 'other',
-        studentId: selectedStudent.studentId,
-        studentName: selectedStudent.studentName,
-        className: selectedStudent.className,
-        rollNumber: selectedStudent.rollNumber || 'N/A',
-        month: formData.month,
-        monthIndex: selectedMonth,
-        voucherNumber: formData.voucherNumber,
-        tuitionFee: parseFloat(formData.monthlyFee) || 0,
-        paidAmount: parseFloat(formData.paidAmount) || 0,
-        donation: parseFloat(formData.donation) || 0,
-        totalAmount: parseFloat(formData.paidAmount) + parseFloat(formData.donation),
-        paymentDate: formData.date,
-        collectionDate: new Date().toISOString(),
-        collectedBy: formData.collectedBy
-      };
+      // Get month names array
+      const months = ['জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন', 'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর'];
 
-      console.log('Payment record to save:', paymentRecord);
+      // Save payment records for each month
+      for (let i = 0; i < numberOfMonths; i++) {
+        const currentMonthIndex = (selectedMonth + i) % 12;
+        const currentMonth = months[currentMonthIndex];
+        
+        const paymentRecord = {
+          type: 'income' as const,
+          category: 'tuition_fee',
+          amount: paidPerMonth + donationPerMonth,
+          description: numberOfMonths > 1 
+            ? `${currentMonth} মাসের টিউশন ফি (${numberOfMonths} মাসের অগ্রিম পেমেন্ট) - ${selectedStudent.studentName}`
+            : `${currentMonth} মাসের টিউশন ফি - ${selectedStudent.studentName}`,
+          date: formData.date,
+          status: 'completed' as const,
+          schoolId: SCHOOL_ID,
+          recordedBy: user?.email || 'admin',
+          paymentMethod: formData.paymentMethod as 'cash' | 'bank_transfer' | 'check' | 'online' | 'other',
+          studentId: selectedStudent.studentId,
+          studentName: selectedStudent.studentName,
+          className: selectedStudent.className,
+          rollNumber: selectedStudent.rollNumber || 'N/A',
+          month: currentMonth,
+          monthIndex: currentMonthIndex,
+          voucherNumber: `${formData.voucherNumber}${numberOfMonths > 1 ? `-${i + 1}` : ''}`,
+          tuitionFee: monthlyFee,
+          paidAmount: paidPerMonth,
+          donation: donationPerMonth,
+          totalAmount: paidPerMonth + donationPerMonth,
+          paymentDate: formData.date,
+          collectionDate: new Date().toISOString(),
+          collectedBy: formData.collectedBy,
+          isAdvancePayment: numberOfMonths > 1,
+          advancePaymentMonths: numberOfMonths,
+          advancePaymentIndex: i + 1
+        };
 
-      // Save to Firebase using accounting queries
-      await accountingQueries.createTransaction(paymentRecord);
-      console.log('Payment saved to Firebase successfully');
+        console.log(`Saving payment record for month ${i + 1}/${numberOfMonths}:`, currentMonth);
+        
+        // Save to Firebase
+        const transactionId = await accountingQueries.createTransaction(paymentRecord);
+        
+        // Send notification to parent
+        try {
+          const { sendFeePaymentNotification } = await import('@/lib/fee-notification-helper');
+          await sendFeePaymentNotification({
+            studentId: selectedStudent.studentId,
+            studentName: selectedStudent.studentName,
+            feeType: 'tuition_fee',
+            feeName: 'টিউশন ফি',
+            amount: paidPerMonth + donationPerMonth,
+            paymentDate: formData.date,
+            voucherNumber: `${formData.voucherNumber}${numberOfMonths > 1 ? `-${i + 1}` : ''}`,
+            paymentMethod: formData.paymentMethod,
+            collectedBy: formData.collectedBy,
+            transactionId: transactionId,
+            className: selectedStudent.className,
+            month: currentMonth
+          });
+        } catch (notifError) {
+          console.error('Error sending fee payment notification (non-critical):', notifError);
+        }
+      }
+      
+      console.log(`All ${numberOfMonths} payment records saved successfully`);
 
-      // Update local payment status immediately
+      // Update local payment status immediately for all months
       setPaymentData(prevData =>
         prevData.map(student => {
           if (student.studentId === selectedStudent.studentId) {
-            console.log('Updating local payment status for student:', student.studentName);
+            console.log(`Updating local payment status for ${numberOfMonths} month(s):`, student.studentName);
             const updatedPayments = [...student.payments];
             const updatedPaymentAmounts = [...student.paymentAmounts];
 
-            updatedPayments[selectedMonth] = true;
-            updatedPaymentAmounts[selectedMonth] = {
-              paid: parseFloat(formData.paidAmount) || 0,
-              donation: parseFloat(formData.donation) || 0
-            };
+            // Mark all months as paid
+            const updatedCollectionInfo = [...(student.collectionInfo || months.map(() => ({ collectedBy: '', collectionDate: '' })))];
+            for (let i = 0; i < numberOfMonths; i++) {
+              const currentMonthIndex = (selectedMonth + i) % 12;
+              updatedPayments[currentMonthIndex] = true;
+              updatedPaymentAmounts[currentMonthIndex] = {
+                paid: paidPerMonth,
+                donation: donationPerMonth
+              };
+              updatedCollectionInfo[currentMonthIndex] = {
+                collectedBy: formData.collectedBy,
+                collectionDate: new Date().toISOString()
+              };
+              console.log(`✅ Marked month ${currentMonthIndex} as paid`);
+            }
 
             // Calculate totals from actual amounts
             const totalPaid = updatedPaymentAmounts.reduce((sum, payment) => sum + (payment.paid || 0), 0);
@@ -609,6 +758,7 @@ function CollectSalaryPage() {
               ...student,
               payments: updatedPayments,
               paymentAmounts: updatedPaymentAmounts,
+              collectionInfo: updatedCollectionInfo,
               totalPaid,
               totalDonation,
               totalDue
@@ -623,6 +773,9 @@ function CollectSalaryPage() {
 
       // Show success dialog
       setSuccessDialogOpen(true);
+
+      // Note: SMS notifications are handled by sendFeePaymentNotification function above
+      // which checks settings before sending SMS
 
     } catch (error) {
       console.error('Error saving payment:', error);
@@ -675,6 +828,7 @@ function CollectSalaryPage() {
           studentId: student.uid,
           studentName: student.name || student.displayName,
           className: student.class || 'N/A',
+          rollNumber: student.rollNumber || student.studentId || 'N/A',
           monthlyFee,
           payments,
           paymentAmounts,
@@ -727,6 +881,44 @@ function CollectSalaryPage() {
 
   const uniqueClasses = Array.from(new Set(paymentData.map(s => s.className)));
 
+  // Handle PDF download
+  const handleDownloadPDF = async () => {
+    if (filteredStudents.length === 0) {
+      alert('ডাউনলোড করার জন্য কোনো ডাটা নেই');
+      return;
+    }
+
+    try {
+      setIsExporting(true);
+      const filename = `টিউশন_ফি_সংগ্রহ_${new Date().toISOString().split('T')[0]}.pdf`;
+      await exportTuitionFeeCollectionToPDF(filteredStudents, filename, schoolLogo, schoolSettings);
+    } catch (error) {
+      console.error('Error downloading PDF:', error);
+      alert('PDF ডাউনলোড করতে সমস্যা হয়েছে');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Handle DOCX download
+  const handleDownloadDOCX = async () => {
+    if (filteredStudents.length === 0) {
+      alert('ডাউনলোড করার জন্য কোনো ডাটা নেই');
+      return;
+    }
+
+    try {
+      setIsExporting(true);
+      const filename = `টিউশন_ফি_সংগ্রহ_${new Date().toISOString().split('T')[0]}.docx`;
+      await exportTuitionFeeCollectionToDOCX(filteredStudents, filename);
+    } catch (error) {
+      console.error('Error downloading DOCX:', error);
+      alert('DOCX ডাউনলোড করতে সমস্যা হয়েছে');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
@@ -741,17 +933,20 @@ function CollectSalaryPage() {
     { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
     { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
     { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
+    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
+    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
     { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
+    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
+    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
     { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
+    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
+    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
     { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: true },
-    { icon: Settings, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Home, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: BookOpen, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: Users, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Calendar, label: 'বার্তা', href: '/admin/accounts', active: false },
-    { icon: Settings, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
     { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Users, label: 'অভিযোগ', href: '/admin/misc', active: false },
+    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
+    { icon: UsersIcon2, label: 'সাপোর্ট', href: '/admin/support', active: false },
+    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
     { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
   ];
 
@@ -870,15 +1065,15 @@ function CollectSalaryPage() {
                     <div className="space-y-2">
                       <div className="flex justify-between text-sm">
                         <span className="text-gray-600">মোট আদায়:</span>
-                        <span className="font-medium text-green-600">৳{totalPaid.toLocaleString()}</span>
+                        <span className="font-medium text-green-600">৳{toBengaliNumerals(totalPaid)}</span>
                       </div>
                       <div className="flex justify-between text-sm">
                         <span className="text-gray-600">মোট বকেয়া:</span>
-                        <span className="font-medium text-orange-600">৳{totalDue.toLocaleString()}</span>
+                        <span className="font-medium text-orange-600">৳{toBengaliNumerals(totalDue)}</span>
                       </div>
                       <div className="flex justify-between text-sm">
                         <span className="text-gray-600">অনুদান থেকে সংগ্রহ:</span>
-                        <span className="font-medium text-purple-600">৳{(realTimeData?.totalDonation || 0).toLocaleString()}</span>
+                        <span className="font-medium text-purple-600">৳{toBengaliNumerals(realTimeData?.totalDonation || 0)}</span>
                       </div>
                       <div className="flex justify-between text-sm">
                         <span className="text-gray-600">পরিশোধিত:</span>
@@ -919,9 +1114,39 @@ function CollectSalaryPage() {
                   </div>
                 </div>
                 <div className="flex gap-3">
-                  <button className="px-6 py-3 bg-blue-600 text-white text-lg rounded-lg hover:bg-blue-700 flex items-center gap-3">
-                    <Download className="w-5 h-5" />
-                    ক্লাস রিপোর্ট
+                  <button 
+                    onClick={handleDownloadPDF}
+                    disabled={isExporting || filteredStudents.length === 0}
+                    className="px-6 py-3 bg-blue-600 text-white text-lg rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-3"
+                  >
+                    {isExporting ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        প্রক্রিয়াকরণ...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-5 h-5" />
+                        PDF ডাউনলোড
+                      </>
+                    )}
+                  </button>
+                  <button 
+                    onClick={handleDownloadDOCX}
+                    disabled={isExporting || filteredStudents.length === 0}
+                    className="px-6 py-3 bg-purple-600 text-white text-lg rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-3"
+                  >
+                    {isExporting ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        প্রক্রিয়াকরণ...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-5 h-5" />
+                        DOCX ডাউনলোড
+                      </>
+                    )}
                   </button>
                   <button className="px-6 py-3 bg-green-600 text-white text-lg rounded-lg hover:bg-green-700 flex items-center gap-3">
                     <Plus className="w-5 h-5" />
@@ -972,25 +1197,41 @@ function CollectSalaryPage() {
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
                           {student.className}
                         </td>
-                        {student.payments.map((isPaid: boolean, monthIndex: number) => (
-                          <td key={monthIndex} className="px-2 py-3 whitespace-nowrap text-center">
-                            <button
-                              onClick={() => openPaymentDialog(student, monthIndex)}
-                              className={`w-6 h-6 rounded-full text-xs font-medium transition-colors ${
-                                isPaid
-                                  ? 'bg-green-500 text-white hover:bg-green-600'
-                                  : 'bg-red-500 text-white hover:bg-red-600'
-                              }`}
-                            >
-                              {isPaid ? '✓' : '✗'}
-                            </button>
-                          </td>
-                        ))}
+                        {student.payments.map((isPaid: boolean, monthIndex: number) => {
+                          const collection = student.collectionInfo?.[monthIndex];
+                          return (
+                            <td key={monthIndex} className="px-2 py-3 whitespace-nowrap text-center relative group">
+                              <button
+                                onClick={() => openPaymentDialog(student, monthIndex)}
+                                className={`w-6 h-6 rounded-full text-xs font-medium transition-colors ${
+                                  isPaid
+                                    ? 'bg-green-500 text-white hover:bg-green-600'
+                                    : 'bg-red-500 text-white hover:bg-red-600'
+                                }`}
+                                title={isPaid && collection?.collectedBy 
+                                  ? `${collection.collectedBy} - ${collection.collectionDate ? new Date(collection.collectionDate).toLocaleDateString('bn-BD') : ''}`
+                                  : ''}
+                              >
+                                {isPaid ? '✓' : '✗'}
+                              </button>
+                              {isPaid && collection?.collectedBy && (
+                                <div className="absolute left-1/2 transform -translate-x-1/2 bottom-full mb-2 hidden group-hover:block z-10 bg-gray-800 text-white text-xs rounded py-1 px-2 whitespace-nowrap">
+                                  <div>{collection.collectedBy}</div>
+                                  {collection.collectionDate && (
+                                    <div className="text-gray-300">
+                                      {new Date(collection.collectionDate).toLocaleDateString('bn-BD')}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
                         <td className="px-4 py-3 whitespace-nowrap text-center">
-                          <span className="text-sm font-medium text-green-600">৳{student.totalPaid.toLocaleString()}</span>
+                          <span className="text-sm font-medium text-green-600">৳{toBengaliNumerals(student.totalPaid)}</span>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-center">
-                          <span className="text-sm font-medium text-purple-600">৳{(student.totalDonation || 0).toLocaleString()}</span>
+                          <span className="text-sm font-medium text-purple-600">৳{toBengaliNumerals(student.totalDonation || 0)}</span>
                         </td>
                       </tr>
                     ))}
@@ -1083,7 +1324,7 @@ function CollectSalaryPage() {
               <div className="flex items-center justify-between p-6 border-b border-gray-200">
                 <div>
                   <h2 className="text-xl font-semibold text-gray-900">টিউশন ফি সংগ্রহ করুন: {selectedStudent.studentName}</h2>
-                  <p className="text-sm text-gray-600">রোল: {selectedStudent.rollNumber || 'N/A'} | শ্রেণি: {selectedStudent.className}</p>
+                  <p className="text-sm text-gray-600">রোল: {(selectedStudent.rollNumber || selectedStudent.studentId || 'N/A').replace(/^STD0*/i, '')} | শ্রেণি: {selectedStudent.className}</p>
                 </div>
                 <button
                   onClick={closeDialog}
@@ -1095,8 +1336,8 @@ function CollectSalaryPage() {
 
               {/* Dialog Body */}
               <div className="p-6 space-y-4">
-                {/* First Row: বছর and মাস */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* First Row: বছর, মাস and মাসের সংখ্যা */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">বছর</label>
                     <select
@@ -1116,6 +1357,28 @@ function CollectSalaryPage() {
                       value={formData.month}
                       readOnly
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      মাসের সংখ্যা
+                      <span className="text-xs text-gray-500 ml-1">(অগ্রিম পেমেন্ট)</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="12"
+                      value={formData.numberOfMonths}
+                      onChange={(e) => {
+                        const months = parseInt(e.target.value) || 1;
+                        const monthlyFee = parseFloat(formData.monthlyFee) || 0;
+                        setFormData({
+                          ...formData, 
+                          numberOfMonths: months,
+                          paidAmount: (monthlyFee * months).toString()
+                        });
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
                 </div>
@@ -1142,10 +1405,39 @@ function CollectSalaryPage() {
                   </div>
                 </div>
 
+                {/* Total Amount Info Box */}
+                {formData.numberOfMonths > 1 && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-blue-900">
+                          {formData.numberOfMonths} মাসের মোট টিউশন ফি
+                        </p>
+                        <p className="text-xs text-blue-700 mt-1">
+                          {formData.monthlyFee} টাকা × {formData.numberOfMonths} মাস
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-2xl font-bold text-blue-900">
+                          {parseFloat(formData.monthlyFee) * formData.numberOfMonths} টাকা
+                        </p>
+                        <p className="text-xs text-blue-700">অগ্রিম পেমেন্ট</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Third Row: প্রদত্ত পরিমাণ and অনুদান থেকে সংগ্রহ */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">প্রদত্ত পরিমাণ*</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      প্রদত্ত পরিমাণ*
+                      {formData.numberOfMonths > 1 && (
+                        <span className="text-xs text-blue-600 ml-1">
+                          ({formData.numberOfMonths} মাসের জন্য)
+                        </span>
+                      )}
+                    </label>
                     <input
                       type="number"
                       value={formData.paidAmount}
@@ -1209,20 +1501,20 @@ function CollectSalaryPage() {
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-600">মাসিক ফি:</span>
-                      <span className="font-medium">৳{parseFloat(formData.monthlyFee || '0').toLocaleString()}</span>
+                      <span className="font-medium">৳{toBengaliNumerals(parseFloat(formData.monthlyFee || '0'))}</span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-600">প্রদত্ত পরিমাণ:</span>
-                      <span className="font-medium">৳{parseFloat(formData.paidAmount || '0').toLocaleString()}</span>
+                      <span className="font-medium">৳{toBengaliNumerals(parseFloat(formData.paidAmount || '0'))}</span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-600">অনুদান:</span>
-                      <span className="font-medium">৳{parseFloat(formData.donation || '0').toLocaleString()}</span>
+                      <span className="font-medium">৳{toBengaliNumerals(parseFloat(formData.donation || '0'))}</span>
                     </div>
                     <hr className="my-2" />
                     <div className="flex justify-between text-lg font-semibold">
                       <span className="text-gray-900">মোট পরিমাণ:</span>
-                      <span className="text-green-600">৳{(parseFloat(formData.paidAmount) + parseFloat(formData.donation)).toLocaleString()}</span>
+                      <span className="text-green-600">৳{toBengaliNumerals(parseFloat(formData.paidAmount) + parseFloat(formData.donation))}</span>
                     </div>
                   </div>
 
@@ -1235,7 +1527,7 @@ function CollectSalaryPage() {
                         </div>
                         <div>
                           <p className="text-sm font-medium text-yellow-800">
-                            অনুদান থেকে ৳{parseFloat(formData.donation).toLocaleString()} সংগ্রহ করা হচ্ছে
+                            অনুদান থেকে ৳{toBengaliNumerals(parseFloat(formData.donation))} সংগ্রহ করা হচ্ছে
                           </p>
                           <p className="text-xs text-yellow-700">
                             প্রদত্ত পরিমাণ মাসিক ফি থেকে কম বলে অনুদান থেকে বাকি অংশ সংগ্রহ করা হচ্ছে
