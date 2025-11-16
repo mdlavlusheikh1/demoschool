@@ -2,15 +2,14 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { auth, db } from '@/lib/firebase';
-import { User, onAuthStateChanged } from 'firebase/auth';
+import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import AdminLayout from '@/components/AdminLayout';
 import { accountingQueries, settingsQueries, studentQueries } from '@/lib/database-queries';
 import { SCHOOL_ID } from '@/lib/constants';
 import { Timestamp } from 'firebase/firestore';
 import {
-  Home, Users, BookOpen, ClipboardList, Calendar, Settings, LogOut, Menu, X,
   UserCheck, GraduationCap, Building, CreditCard, TrendingUp, Search, Bell,
   Plus, Play, Pause, RotateCcw, Activity, Database, Server,
   Package, Heart, DollarSign, Users2,   Gift, Target, Eye, CheckCircle, HandHeart, List, Edit,
@@ -52,10 +51,7 @@ interface DonationTransaction {
 }
 
 function DonationPage() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [donations, setDonations] = useState<DonationTransaction[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -100,21 +96,14 @@ function DonationPage() {
   ];
   const [imageError, setImageError] = useState(false);
   const router = useRouter();
-  const { userData } = useAuth();
+  const { userData, loading: authLoading } = useAuth();
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setUser(user);
-        loadDonations();
-        loadSchoolSettings();
-      } else {
-        router.push('/auth/login');
-      }
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, [router]);
+    if (userData) {
+      loadDonations();
+      loadSchoolSettings();
+    }
+  }, [userData]);
 
   // Convert English numbers to Bengali numerals
   const toBengaliNumerals = (num: number): string => {
@@ -560,7 +549,7 @@ function DonationPage() {
         status: formData.status as 'pending' | 'completed' | 'cancelled' | 'refunded',
         date: formData.date,
         schoolId: schoolId,
-        recordedBy: user?.uid || user?.email || 'admin',
+        recordedBy: userData?.uid || userData?.email || 'admin',
         donorName: formData.donorName,
         purpose: finalPurpose
       };
@@ -695,7 +684,7 @@ function DonationPage() {
         date: formData.date,
         status: formData.status,
         schoolId: SCHOOL_ID,
-        recordedBy: user?.email || 'admin',
+        recordedBy: userData?.email || 'admin',
         paymentMethod: formData.paymentMethod,
         donorName: formData.donorName,
         donorPhone: formData.donorPhone,
@@ -1081,7 +1070,7 @@ function DonationPage() {
     }
   };
 
-  if (loading) {
+  if (authLoading) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
@@ -1089,93 +1078,11 @@ function DonationPage() {
     );
   }
 
-  const menuItems = [
-    { icon: Home, label: 'ড্যাশবোর্ড', href: '/admin/dashboard', active: false },
-    { icon: Users, label: 'শিক্ষার্থী', href: '/admin/students', active: false },
-    { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
-    { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
-    { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
-    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
-    { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: false },
-    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
-    { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
-    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
-    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
-    { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Gift, label: 'Donation', href: '/admin/donation', active: true },
-    { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
-    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
-    { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
-  ];
-
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Sidebar */}
-      <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${
-        sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-      }`}>
-        <div className="flex items-center h-16 px-6 border-b border-gray-200 bg-white">
-          <div className="flex items-center space-x-2">
-            <div className="w-8 h-8 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-              <span className="text-white font-bold text-sm">ই</span>
-            </div>
-            <span className="text-lg font-bold text-gray-900">সুপার অ্যাডমিন</span>
-          </div>
-          <button onClick={() => setSidebarOpen(false)} className="ml-auto lg:hidden text-gray-500 hover:text-gray-700">
-            <X className="w-6 h-6" />
-          </button>
-        </div>
-        <nav className="flex-1 mt-2 overflow-y-auto pb-4">
-          {menuItems.map((item) => (
-            <a key={item.label} href={item.href} className={`flex items-center px-6 py-2 text-sm font-medium transition-colors ${
-                item.active ? 'bg-blue-50 text-blue-700 border-r-2 border-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }`}>
-              <item.icon className="w-4 h-4 mr-3" />
-              {item.label}
-            </a>
-          ))}
-          <button onClick={handleLogout} className="flex items-center w-full px-6 py-2 mt-4 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors">
-            <LogOut className="w-4 h-4 mr-3" />
-            লগআউট
-          </button>
-        </nav>
-      </div>
-
-      {/* Main Content */}
-      <div className="flex-1 lg:ml-64">
-        <div className="sticky top-0 z-40 bg-white shadow-sm border-b border-gray-200 h-16">
-          <div className="h-full px-4 sm:px-6 lg:px-8">
-            <div className="flex items-center justify-between h-full">
-              <div className="flex items-center h-full">
-                <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-gray-500 hover:text-gray-700 mr-4">
-                  <Menu className="w-6 h-6" />
-                </button>
-                <div className="flex flex-col justify-center h-full">
-                  <div className="flex items-center space-x-2">
-                    <Heart className="w-6 h-6 text-red-500" />
-                    <h1 className="text-xl font-semibold text-gray-900 leading-tight">দান ব্যবস্থাপনা</h1>
-                  </div>
-                  <p className="text-sm text-gray-600 leading-tight">দান ব্যবস্থাপনা এবং অনুদান সংগ্রহ</p>
-                </div>
-              </div>
-              <div className="flex items-center space-x-4 h-full">
-                <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-medium text-sm">{user?.email?.charAt(0).toUpperCase()}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="p-4 lg:p-6 bg-gray-50 min-h-screen">
-          {/* Donation Overview */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+    <AdminLayout title="দান ব্যবস্থাপনা" subtitle="দান ব্যবস্থাপনা এবং অনুদান সংগ্রহ">
+      {/* Donation Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">মোট অনুদান</p>
@@ -1186,134 +1093,134 @@ function DonationPage() {
                       `৳${donationStats.totalDonations.toLocaleString('bn-BD')}`
                     )}
                   </p>
-                </div>
-                <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
-                  <DollarSign className="w-5 h-5 text-green-600" />
-                </div>
-              </div>
             </div>
-
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 mb-1">দাতার সংখ্যা</p>
-                  <p className="text-2xl font-bold text-blue-600">
-                    {dataLoading ? (
-                      <Loader2 className="w-6 h-6 animate-spin" />
-                    ) : (
-                      toBengaliNumerals(donationStats.donorCount)
-                    )}
-                  </p>
-                </div>
-                <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
-                  <Users2 className="w-5 h-5 text-blue-600" />
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 mb-1">এই মাসে</p>
-                  <p className="text-2xl font-bold text-purple-600">
-                    {dataLoading ? (
-                      <Loader2 className="w-6 h-6 animate-spin" />
-                    ) : (
-                      `৳${donationStats.thisMonthDonations.toLocaleString('bn-BD')}`
-                    )}
-                  </p>
-                </div>
-                <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
-                  <Target className="w-5 h-5 text-purple-600" />
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 mb-1">মোট অনুদান প্রদান</p>
-                  <p className="text-2xl font-bold text-orange-600">
-                    {dataLoading ? (
-                      <Loader2 className="w-6 h-6 animate-spin" />
-                    ) : (
-                      `৳${recipientStats.totalDonationDistributed.toLocaleString('bn-BD')}`
-                    )}
-                  </p>
-                </div>
-                <div className="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center">
-                  <HandHeart className="w-5 h-5 text-orange-600" />
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 mb-1">মোট অনুদান গ্রহীতা</p>
-                  <p className="text-2xl font-bold text-teal-600">
-                    {dataLoading ? (
-                      <Loader2 className="w-6 h-6 animate-spin" />
-                    ) : (
-                      toBengaliNumerals(recipientStats.totalRecipients)
-                    )}
-                  </p>
-                </div>
-                <div className="w-10 h-10 bg-teal-100 rounded-full flex items-center justify-center">
-                  <Users2 className="w-5 h-5 text-teal-600" />
-                </div>
-              </div>
+            <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+              <DollarSign className="w-5 h-5 text-green-600" />
             </div>
           </div>
+        </div>
 
-          {/* Action Buttons */}
-          <div className="mb-6 flex flex-wrap gap-4">
-            <button
-              onClick={() => setShowAddDialog(true)}
-              className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center space-x-2 font-medium"
-            >
-              <Plus className="w-5 h-5" />
-              <span>নতুন অনুদান যোগ করুন</span>
-            </button>
-            <button
-              onClick={() => router.push('/admin/donation/recipients')}
-              className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-colors flex items-center space-x-2 font-medium"
-            >
-              <Users2 className="w-5 h-5" />
-              <span>অনুদান গ্রহীতা</span>
-            </button>
-            <div className="flex items-center space-x-2 ml-auto">
-              <button
-                onClick={exportToPDF}
-                disabled={isExporting || filteredDonations.length === 0}
-                className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors flex items-center space-x-2 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                title="PDF হিসেবে এক্সপোর্ট করুন"
-              >
-                {isExporting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-600 mb-1">দাতার সংখ্যা</p>
+              <p className="text-2xl font-bold text-blue-600">
+                {dataLoading ? (
+                  <Loader2 className="w-6 h-6 animate-spin" />
                 ) : (
-                  <Download className="w-4 h-4" />
+                  toBengaliNumerals(donationStats.donorCount)
                 )}
-                <span>PDF</span>
-              </button>
-              <button
-                onClick={exportToDOCX}
-                disabled={isExporting || filteredDonations.length === 0}
-                className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors flex items-center space-x-2 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                title="DOCX হিসেবে এক্সপোর্ট করুন"
-              >
-                {isExporting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Download className="w-4 h-4" />
-                )}
-                <span>DOCX</span>
-              </button>
+              </p>
+            </div>
+            <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+              <Users2 className="w-5 h-5 text-blue-600" />
             </div>
           </div>
+        </div>
 
-          {/* Search and Filter */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 mb-6">
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-600 mb-1">এই মাসে</p>
+              <p className="text-2xl font-bold text-purple-600">
+                {dataLoading ? (
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                ) : (
+                  `৳${donationStats.thisMonthDonations.toLocaleString('bn-BD')}`
+                )}
+              </p>
+            </div>
+            <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+              <Target className="w-5 h-5 text-purple-600" />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-600 mb-1">মোট অনুদান প্রদান</p>
+              <p className="text-2xl font-bold text-orange-600">
+                {dataLoading ? (
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                ) : (
+                  `৳${recipientStats.totalDonationDistributed.toLocaleString('bn-BD')}`
+                )}
+              </p>
+            </div>
+            <div className="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center">
+              <HandHeart className="w-5 h-5 text-orange-600" />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-600 mb-1">মোট অনুদান গ্রহীতা</p>
+              <p className="text-2xl font-bold text-teal-600">
+                {dataLoading ? (
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                ) : (
+                  toBengaliNumerals(recipientStats.totalRecipients)
+                )}
+              </p>
+            </div>
+            <div className="w-10 h-10 bg-teal-100 rounded-full flex items-center justify-center">
+              <Users2 className="w-5 h-5 text-teal-600" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Action Buttons */}
+      <div className="mb-6 flex flex-wrap gap-4">
+        <button
+          onClick={() => setShowAddDialog(true)}
+          className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center space-x-2 font-medium"
+        >
+          <Plus className="w-5 h-5" />
+          <span>নতুন অনুদান যোগ করুন</span>
+        </button>
+        <button
+          onClick={() => router.push('/admin/donation/recipients')}
+          className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-colors flex items-center space-x-2 font-medium"
+        >
+          <Users2 className="w-5 h-5" />
+          <span>অনুদান গ্রহীতা</span>
+        </button>
+        <div className="flex items-center space-x-2 ml-auto">
+          <button
+            onClick={exportToPDF}
+            disabled={isExporting || filteredDonations.length === 0}
+            className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors flex items-center space-x-2 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            title="PDF হিসেবে এক্সপোর্ট করুন"
+          >
+            {isExporting ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+            <span>PDF</span>
+          </button>
+          <button
+            onClick={exportToDOCX}
+            disabled={isExporting || filteredDonations.length === 0}
+            className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors flex items-center space-x-2 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            title="DOCX হিসেবে এক্সপোর্ট করুন"
+          >
+            {isExporting ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+            <span>DOCX</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Search and Filter */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 mb-6">
             <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
               <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center flex-1">
                 <div className="relative flex-1 max-w-md">
@@ -1359,8 +1266,8 @@ function DonationPage() {
             </div>
           </div>
 
-          {/* Donations List */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 mb-6">
+      {/* Donations List */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 mb-6">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-gray-900">সকল অনুদান</h3>
               <span className="text-sm text-gray-600">
@@ -1440,10 +1347,10 @@ function DonationPage() {
                 </div>
               )}
             </div>
-          </div>
+      </div>
 
-          {/* Add Donation Dialog */}
-          {showAddDialog && (
+      {/* Add Donation Dialog */}
+      {showAddDialog && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
               <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
                 <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
@@ -1719,8 +1626,8 @@ function DonationPage() {
             </div>
           )}
 
-          {/* View Donation Dialog */}
-          {showViewDialog && selectedDonation && (
+      {/* View Donation Dialog */}
+      {showViewDialog && selectedDonation && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
               <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
                 <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
@@ -1833,8 +1740,8 @@ function DonationPage() {
             </div>
           )}
 
-          {/* Edit Donation Dialog */}
-          {showEditDialog && selectedDonation && (
+      {/* Edit Donation Dialog */}
+      {showEditDialog && selectedDonation && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
               <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
                 <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
@@ -2097,10 +2004,7 @@ function DonationPage() {
               </div>
             </div>
           )}
-
-        </div>
-      </div>
-    </div>
+    </AdminLayout>
   );
 }
 

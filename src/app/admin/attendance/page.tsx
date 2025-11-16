@@ -2,12 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { auth } from '@/lib/firebase';
-import { User as AuthUser, onAuthStateChanged } from 'firebase/auth';
 import { useAuth } from '@/contexts/AuthContext';
 import { collection, onSnapshot, query, orderBy, where, serverTimestamp, getDocs, doc, setDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import AdminLayout from '@/components/AdminLayout';
 import { attendanceQueries, studentQueries, classQueries, teacherQueries, User as StudentUser, User as TeacherUser, AttendanceRecord, Class } from '@/lib/database-queries';
 import {
   Home,
@@ -62,9 +61,6 @@ interface TeacherAttendanceRecord {
 }
 
 function AttendancePage() {
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [attendanceType, setAttendanceType] = useState<'students' | 'teachers'>('students');
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [selectedClass, setSelectedClass] = useState('all');
@@ -88,51 +84,29 @@ function AttendancePage() {
   const [successMessage, setSuccessMessage] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(7);
-  const [imageError, setImageError] = useState(false);
   const [saving, setSaving] = useState(false);
   const router = useRouter();
-  const { userData } = useAuth();
-
-  // Reset image error when userData or user changes
-  useEffect(() => {
-    setImageError(false);
-  }, [userData, user]);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setUser(user);
-        loadStudents();
-        loadTeachers();
-        loadAttendanceRecords();
-      } else {
-        router.push('/auth/login');
-      }
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, [router]);
+  const { userData, loading: authLoading } = useAuth();
 
   // Load students, teachers and classes when component mounts
   useEffect(() => {
-    if (user) {
+    if (userData) {
       loadStudents();
       loadTeachers();
       loadClasses();
     }
-  }, [user]);
+  }, [userData]);
 
   // Load attendance records when date, class, students, or attendance type changes
   useEffect(() => {
-    if (user) {
+    if (userData) {
       if (attendanceType === 'students' && students.length > 0) {
         loadAttendanceRecords();
       } else if (attendanceType === 'teachers' && teachers.length > 0) {
         loadTeacherAttendanceRecords();
       }
     }
-  }, [user, selectedDate, selectedClass, students, teachers, attendanceType]);
+  }, [userData, selectedDate, selectedClass, students, teachers, attendanceType]);
 
   // Auto-close success modal after 3 seconds
   useEffect(() => {
@@ -146,7 +120,7 @@ function AttendancePage() {
   }, [showSuccessModal]);
 
   const loadStudents = async () => {
-    if (!user) return;
+    if (!userData) return;
 
     setStudentsLoading(true);
     setError('');
@@ -163,7 +137,7 @@ function AttendancePage() {
   };
 
   const loadTeachers = async () => {
-    if (!user) return;
+    if (!userData) return;
 
     setTeachersLoading(true);
     setError('');
@@ -180,7 +154,7 @@ function AttendancePage() {
   };
 
   const loadClasses = async () => {
-    if (!user) return;
+    if (!userData) return;
 
     setClassesLoading(true);
 
@@ -196,7 +170,7 @@ function AttendancePage() {
   };
 
   const loadAttendanceRecords = async () => {
-    if (!user) return;
+    if (!userData) return;
 
     setAttendanceLoading(true);
     setError('');
@@ -228,7 +202,7 @@ function AttendancePage() {
   };
 
   const loadTeacherAttendanceRecords = async () => {
-    if (!user) return;
+    if (!userData) return;
 
     setAttendanceLoading(true);
     setError('');
@@ -269,7 +243,7 @@ function AttendancePage() {
   };
 
   const markStudentAttendance = async (studentId: string, status: 'present' | 'absent' | 'late') => {
-    if (!user) return;
+    if (!userData) return;
 
     try {
       // Check if student already has attendance record for today
@@ -290,7 +264,7 @@ function AttendancePage() {
           date: selectedDate,
           status,
           timestamp: serverTimestamp() as any,
-          teacherId: user.uid,
+          teacherId: userData.uid,
           method: 'manual' as const
         };
 
@@ -307,7 +281,7 @@ function AttendancePage() {
   };
 
   const handleBulkAttendanceMark = async () => {
-    if (!user || selectedStudents.length === 0) return;
+    if (!userData || selectedStudents.length === 0) return;
 
     // Check for already marked students
     const alreadyMarkedStudents = selectedStudents.filter(studentId => {
@@ -342,7 +316,7 @@ function AttendancePage() {
           date: selectedDate,
           status: bulkAttendanceStatus,
           timestamp: serverTimestamp() as any,
-          teacherId: user.uid,
+          teacherId: userData.uid,
           method: 'manual',
           rollNumber: student?.rollNumber || student?.studentId || '-'
         } as any);
@@ -383,7 +357,7 @@ function AttendancePage() {
   };
 
   const markTeacherAttendance = async (teacherId: string, status: 'present' | 'absent' | 'late' | 'leave') => {
-    if (!user) return;
+    if (!userData) return;
 
     setSaving(true);
     setError('');
@@ -414,7 +388,7 @@ function AttendancePage() {
         date: selectedDate,
         status: finalStatus,
         timestamp: serverTimestamp(),
-        markedBy: user.uid
+        markedBy: userData.uid
       };
 
       // If it's a new record and status is present/late, set entryTime
@@ -580,7 +554,7 @@ function AttendancePage() {
   const absentCount = uniqueRecords.filter(r => r.status === 'absent').length;
   const lateCount = uniqueRecords.filter(r => r.status === 'late').length;
 
-  if (loading) {
+  if (authLoading) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
@@ -588,132 +562,21 @@ function AttendancePage() {
     );
   }
 
-  const menuItems = [
-    { icon: Home, label: 'ড্যাশবোর্ড', href: '/admin/dashboard', active: false },
-    { icon: Users, label: 'শিক্ষার্থী', href: '/admin/students', active: false },
-    { icon: GraduationCap, label: 'শিক্ষক', href: '/admin/teachers', active: false },
-    { icon: Building, label: 'অভিভাবক', href: '/admin/parents', active: false },
-    { icon: BookOpen, label: 'ক্লাস', href: '/admin/classes', active: false },
-    { icon: BookOpenIcon, label: 'বিষয়', href: '/admin/subjects', active: false },
-    { icon: FileText, label: 'বাড়ির কাজ', href: '/admin/homework', active: false },
-    { icon: ClipboardList, label: 'উপস্থিতি', href: '/admin/attendance', active: true },
-    { icon: Award, label: 'পরীক্ষা', href: '/admin/exams', active: false },
-    { icon: Bell, label: 'নোটিশ', href: '/admin/notice', active: false },
-    { icon: Calendar, label: 'ইভেন্ট', href: '/admin/events', active: false },
-    { icon: MessageSquare, label: 'বার্তা', href: '/admin/message', active: false },
-    { icon: AlertCircle, label: 'অভিযোগ', href: '/admin/complaint', active: false },
-    { icon: CreditCard, label: 'হিসাব', href: '/admin/accounting', active: false },
-    { icon: Gift, label: 'Donation', href: '/admin/donation', active: false },
-    { icon: Package, label: 'ইনভেন্টরি', href: '/admin/inventory', active: false },
-    { icon: Sparkles, label: 'Generate', href: '/admin/generate', active: false },
-    { icon: UsersIcon, label: 'সাপোর্ট', href: '/admin/support', active: false },
-    { icon: Globe, label: 'পাবলিক পেজ', href: '/admin/public-pages-control', active: false },
-    { icon: Settings, label: 'সেটিংস', href: '/admin/settings', active: false },
-  ];
-
-
-
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Sidebar */}
-      <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${
-        sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-      }`}>
-        <div className="flex items-center h-16 px-6 border-b border-gray-200 bg-white">
-          <div className="flex items-center space-x-2">
-            <div className="w-8 h-8 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center">
-              <span className="text-white font-bold text-sm">ই</span>
-            </div>
-            <span className="text-lg font-bold text-gray-900">সুপার অ্যাডমিন</span>
-          </div>
-          <button
-            onClick={() => setSidebarOpen(false)}
-            className="ml-auto lg:hidden text-gray-500 hover:text-gray-700"
-          >
-            <X className="w-6 h-6" />
-          </button>
+    <AdminLayout title="উপস্থিতি ব্যবস্থাপনা" subtitle="শিক্ষার্থী ও শিক্ষকের উপস্থিতি দেখুন এবং পরিচালনা করুন">
+      {/* Search Bar */}
+      <div className="mb-6">
+        <div className="relative">
+          <Search className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            placeholder={attendanceType === 'students' ? 'শিক্ষার্থী খুঁজুন...' : 'শিক্ষক খুঁজুন...'}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
         </div>
-
-        <nav className="flex-1 mt-2 overflow-y-auto pb-4">
-          {menuItems.map((item) => (
-            <a
-              key={item.label}
-              href={item.href}
-              className={`flex items-center px-6 py-2 text-sm font-medium transition-colors ${
-                item.active
-                  ? 'bg-blue-50 text-blue-700 border-r-2 border-blue-700'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }`}
-            >
-              <item.icon className="w-4 h-4 mr-3" />
-              {item.label}
-            </a>
-          ))}
-          
-          <button
-            onClick={handleLogout}
-            className="flex items-center w-full px-6 py-2 mt-4 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
-          >
-            <LogOut className="w-4 h-4 mr-3" />
-            লগআউট
-          </button>
-        </nav>
       </div>
-
-      {/* Main Content */}
-      <div className="flex-1 lg:ml-64">
-        {/* Top Navigation */}
-        <div className="sticky top-0 z-40 bg-white shadow-sm border-b border-gray-200 h-16">
-          <div className="h-full px-4 sm:px-6 lg:px-8">
-            <div className="flex items-center justify-between h-full">
-              <div className="flex items-center h-full">
-                <button
-                  onClick={() => setSidebarOpen(true)}
-                  className="lg:hidden text-gray-500 hover:text-gray-700 mr-4"
-                >
-                  <Menu className="w-6 h-6" />
-                </button>
-                <div className="flex flex-col justify-center h-full">
-                  <h1 className="text-xl font-semibold text-gray-900 leading-tight">উপস্থিতি ব্যবস্থাপনা</h1>
-                  <p className="text-sm text-gray-600 leading-tight">শিক্ষার্থী ও শিক্ষকদের উপস্থিতি ট্র্যাক করুন</p>
-                </div>
-              </div>
-              
-              <div className="flex items-center space-x-4 h-full">
-                <div className="relative">
-                  <Search className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                  <input
-                    type="text"
-                    placeholder={attendanceType === 'students' ? 'শিক্ষার্থী খুঁজুন...' : 'শিক্ষক খুঁজুন...'}
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 h-10 w-64"
-                  />
-                </div>
-                <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-blue-600 rounded-full flex items-center justify-center overflow-hidden">
-                  {((userData as any)?.photoURL || user?.photoURL) && !imageError ? (
-                    <img
-                      src={(userData as any)?.photoURL || user?.photoURL || ''}
-                      alt="Profile"
-                      className="w-full h-full object-cover"
-                      onError={() => {
-                        setImageError(true);
-                      }}
-                    />
-                  ) : (
-                    <span className="text-white font-medium text-sm">
-                      {(user?.email?.charAt(0) || userData?.email?.charAt(0) || 'U').toUpperCase()}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Page Content */}
-        <div className="p-4 lg:p-4 bg-gray-50 min-h-screen">
           {/* Tab Selector */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-2 mb-6 flex space-x-2">
             <button
@@ -1085,91 +948,39 @@ function AttendancePage() {
                             <div className="text-sm text-gray-900">{teacher.email || 'N/A'}</div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm text-gray-900">{teacher.phoneNumber || 'N/A'}</div>
+                            <div className="text-sm text-gray-900">{(teacher as any).phoneNumber || (teacher as any).phone || 'N/A'}</div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-center">
                             {attendance ? (
-                              <span className={`inline-flex px-3 py-1 text-xs font-semibold rounded-full border ${getStatusColor(attendance.status)}`}>
-                                {getStatusLabel(attendance.status)}
+                              <span className={`px-3 py-1 text-xs font-medium rounded-full inline-flex items-center gap-1 ${
+                                attendance.status === 'present'
+                                  ? 'bg-green-100 text-green-800'
+                                  : attendance.status === 'absent'
+                                  ? 'bg-red-100 text-red-800'
+                                  : attendance.status === 'late'
+                                  ? 'bg-yellow-100 text-yellow-800'
+                                  : 'bg-blue-100 text-blue-800'
+                              }`}>
+                                {attendance.status === 'present' && <CheckCircle className="w-3 h-3" />}
+                                {attendance.status === 'absent' && <XCircle className="w-3 h-3" />}
+                                {attendance.status === 'late' && <Clock className="w-3 h-3" />}
+                                {attendance.status === 'leave' && <Clock className="w-3 h-3" />}
+                                {attendance.status === 'present' ? 'উপস্থিত' : attendance.status === 'absent' ? 'অনুপস্থিত' : attendance.status === 'late' ? 'বিলম্বিত' : 'ছুটি'}
                               </span>
                             ) : (
-                              <span className="inline-flex px-3 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-800 border border-gray-300">
+                              <span className="px-3 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">
                                 মার্ক করা হয়নি
                               </span>
                             )}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                            {attendance?.entryTime ? (
-                              <div className="flex items-center">
-                                <Clock className="w-4 h-4 mr-1 text-green-500" />
-                                <span className="text-green-700 font-medium">
-                                  {(() => {
-                                    try {
-                                      const timestamp = attendance.entryTime;
-                                      let date: Date;
-
-                                      if (timestamp && typeof timestamp === 'object' && 'toDate' in timestamp) {
-                                        date = timestamp.toDate();
-                                      } else if (timestamp instanceof Date) {
-                                        date = timestamp;
-                                      } else {
-                                        date = new Date(timestamp);
-                                      }
-
-                                      return date.toLocaleTimeString('bn-BD', {
-                                        hour: '2-digit',
-                                        minute: '2-digit',
-                                        second: '2-digit',
-                                        hour12: true
-                                      });
-                                    } catch (error) {
-                                      console.error('Error formatting entry time:', error);
-                                      return '--:--';
-                                    }
-                                  })()}
-                                </span>
-                              </div>
-                            ) : (
-                              <span className="text-gray-400">-</span>
-                            )}
+                            {attendance?.entryTime?.toDate?.().toLocaleTimeString('bn-BD') || '-'}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                            {attendance?.exitTime ? (
-                              <div className="flex items-center">
-                                <Clock className="w-4 h-4 mr-1 text-blue-500" />
-                                <span className="text-blue-700 font-medium">
-                                  {(() => {
-                                    try {
-                                      const timestamp = attendance.exitTime;
-                                      let date: Date;
-
-                                      if (timestamp && typeof timestamp === 'object' && 'toDate' in timestamp) {
-                                        date = timestamp.toDate();
-                                      } else if (timestamp instanceof Date) {
-                                        date = timestamp;
-                                      } else {
-                                        date = new Date(timestamp);
-                                      }
-
-                                      return date.toLocaleTimeString('bn-BD', {
-                                        hour: '2-digit',
-                                        minute: '2-digit',
-                                        second: '2-digit',
-                                        hour12: true
-                                      });
-                                    } catch (error) {
-                                      console.error('Error formatting exit time:', error);
-                                      return '--:--';
-                                    }
-                                  })()}
-                                </span>
-                              </div>
-                            ) : (
-                              <span className="text-gray-400">-</span>
-                            )}
+                            {attendance?.exitTime?.toDate?.().toLocaleTimeString('bn-BD') || '-'}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-center">
-                            <div className="flex items-center justify-center space-x-2">
+                            <div className="flex items-center justify-center space-x-1">
                               <button
                                 onClick={() => markTeacherAttendance(teacher.uid, 'present')}
                                 disabled={saving}
@@ -1182,17 +993,6 @@ function AttendancePage() {
                                 উপস্থিত
                               </button>
                               <button
-                                onClick={() => markTeacherAttendance(teacher.uid, 'late')}
-                                disabled={saving}
-                                className={`px-3 py-1 text-xs font-medium rounded ${
-                                  attendance?.status === 'late'
-                                    ? 'bg-yellow-600 text-white'
-                                    : 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
-                                } disabled:opacity-50 disabled:cursor-not-allowed`}
-                              >
-                                বিলম্বে
-                              </button>
-                              <button
                                 onClick={() => markTeacherAttendance(teacher.uid, 'absent')}
                                 disabled={saving}
                                 className={`px-3 py-1 text-xs font-medium rounded ${
@@ -1202,6 +1002,17 @@ function AttendancePage() {
                                 } disabled:opacity-50 disabled:cursor-not-allowed`}
                               >
                                 অনুপস্থিত
+                              </button>
+                              <button
+                                onClick={() => markTeacherAttendance(teacher.uid, 'late')}
+                                disabled={saving}
+                                className={`px-3 py-1 text-xs font-medium rounded ${
+                                  attendance?.status === 'late'
+                                    ? 'bg-yellow-600 text-white'
+                                    : 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
+                                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                              >
+                                বিলম্বিত
                               </button>
                               <button
                                 onClick={() => markTeacherAttendance(teacher.uid, 'leave')}
@@ -1225,8 +1036,6 @@ function AttendancePage() {
             )}
           </div>
           )}
-        </div>
-      </div>
 
       {/* Bulk Attendance Modal */}
       {showAttendanceModal && (
@@ -1482,7 +1291,7 @@ function AttendancePage() {
           </div>
         </div>
       )}
-    </div>
+    </AdminLayout>
   );
 }
 

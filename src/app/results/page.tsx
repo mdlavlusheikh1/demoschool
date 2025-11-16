@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Navigation from '@/components/Navigation';
 import { Award, Search, Filter, ChevronDown, ChevronUp, Download, Eye, Calendar, User, BookOpen, TrendingUp, CheckCircle, AlertCircle, RefreshCw } from 'lucide-react';
@@ -34,7 +34,7 @@ interface ExamResult {
   remarks: string;
 }
 
-const PublicResultsPage = () => {
+const PublicResultsPageContent = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [results, setResults] = useState<ExamResult[]>([]);
@@ -1193,6 +1193,16 @@ const PublicResultsPage = () => {
   );
 };
 
-export default function PublicResultsPageWrapper() {
-  return <PublicResultsPage />;
-}
+const PublicResultsPage = () => {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    }>
+      <PublicResultsPageContent />
+    </Suspense>
+  );
+};
+
+export default PublicResultsPage;
