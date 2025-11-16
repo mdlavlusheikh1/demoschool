@@ -312,14 +312,14 @@ function DonationPage() {
       }
     };
 
-    if (user) {
+    if (userData) {
       loadRecipientStats();
     }
-  }, [user]);
+  }, [userData]);
 
   // Real-time listener for transactions (to update recipient stats)
   useEffect(() => {
-    if (!user) return;
+    if (!userData) return;
 
     const schoolId = SCHOOL_ID;
     const unsubscribe = accountingQueries.subscribeToTransactions(schoolId, async (transactions) => {
@@ -409,7 +409,7 @@ function DonationPage() {
       if (unsubscribe) unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+  }, [userData]);
 
   // Filter donations
   const filteredDonations = useMemo(() => {
